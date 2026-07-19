@@ -4,12 +4,13 @@ import {
   encodeMovementInput,
   normalizeDirection,
   type NetworkPlayer,
+  type PhotoGrantMessage,
   type ServerControlMessage,
 } from "../../../shared/worldProtocol";
 import { WORLD } from "../config";
 import type { PlayerIdentity } from "../types/world";
 import { getOrCreateAnonymousSession } from "../../services/supabase";
-import { TemporaryPhotoStore } from "../../services/TemporaryPhotoStore";
+import { CloudflarePhotoStore } from "../../services/CloudflarePhotoStore";
 import type {
   BlockChatMessage,
   OnlinePlayer,
@@ -22,9 +23,16 @@ interface SessionTicketResponse {
   error?: string;
 }
 
+interface PendingPhotoGrant {
+  resolve(grant: PhotoGrantMessage): void;
+  reject(error: Error): void;
+  timeout: number;
+}
+
 const MOVEMENT_HEARTBEAT_MS = 3_000;
 const ROOM_RECONCILE_MS = 15_000;
 const CONNECT_TIMEOUT_MS = 12_000;
+const PHOTO_GRANT_TIMEOUT_MS = 8_000;
 
 export class WebSocketTownSquare implements TownSquareTransport {
   readonly mode = "world-socket" as const;
@@ -39,12 +47,15 @@ export class WebSocketTownSquare implements TownSquareTransport {
   private lastMovementAt = 0;
   private lastPingAt = 0;
   private playersBySlot = new Map<number, OnlinePlayer>();
-  private readonly photos = new TemporaryPhotoStore();
+  private readonly photos: CloudflarePhotoStore;
+  private pendingPhotoGrant: PendingPhotoGrant | null = null;
 
   constructor(
     private readonly endpoint: string,
     private readonly callbacks: TownSquareCallbacks,
-  ) {}
+  ) {
+    this.photos = new CloudflarePhotoStore(endpoint);
+  }
 
   get connectionId(): string {
     return this._connectionId || this.authUserId;
@@ -52,6 +63,7 @@ export class WebSocketTownSquare implements TownSquareTransport {
 
   async connect(profile: PlayerIdentity, x: number, y: number): Promise<string> {
     const generation = ++this.generation;
+    this.rejectPendingPhotoGrant(new Error("The world connection restarted."));
     await this.closeSocket();
     this.callbacks.onStatus("connecting");
     this.playersBySlot.clear();
@@ -135,6 +147,7 @@ export class WebSocketTownSquare implements TownSquareTransport {
       });
       socket.addEventListener("close", event => {
         if (generation !== this.generation) return;
+        this.rejectPendingPhotoGrant(new Error(event.reason || "The world connection closed during the photo upload."));
         if (!settled) fail(new Error(event.reason || "The Blockaroo world WebSocket closed before joining."));
         this.callbacks.onStatus(event.code === 1000 ? "offline" : "error");
       });
@@ -187,16 +200,16 @@ export class WebSocketTownSquare implements TownSquareTransport {
 
   async sendImage(profile: PlayerIdentity, imageDataUrl: string, x: number, y: number): Promise<BlockChatMessage | null> {
     if (this.socket?.readyState !== WebSocket.OPEN || !this.authUserId) return null;
-    const objectPath = await this.photos.upload(this.authUserId, imageDataUrl);
-    this.sendJson({ type: "photo", objectPath });
-    this.photos.scheduleRemoval(objectPath);
+    const grant = await this.requestPhotoGrant();
+    await this.photos.upload(grant, imageDataUrl);
+    this.sendJson({ type: "photo", mediaId: grant.mediaId });
     return {
       id: crypto.randomUUID(),
       player: this.localPlayer(profile, x, y),
       kind: "image",
       text: "",
       imageDataUrl,
-      objectPath,
+      mediaId: grant.mediaId,
       sentAt: Date.now(),
       durationMs: 12_000,
     };
@@ -204,6 +217,7 @@ export class WebSocketTownSquare implements TownSquareTransport {
 
   async disconnect(): Promise<void> {
     this.generation += 1;
+    this.rejectPendingPhotoGrant(new Error("The world connection closed."));
     await this.closeSocket();
   }
 
@@ -219,6 +233,14 @@ export class WebSocketTownSquare implements TownSquareTransport {
   }
 
   private async handleControl(message: ServerControlMessage): Promise<void> {
+    if (message.type === "photo-grant") {
+      const pending = this.pendingPhotoGrant;
+      if (!pending) return;
+      this.pendingPhotoGrant = null;
+      window.clearTimeout(pending.timeout);
+      pending.resolve(message);
+      return;
+    }
     if (message.type === "enter") {
       const player = this.toOnlinePlayer(message.player);
       if (player.slot === this.localSlot) return;
@@ -261,7 +283,7 @@ export class WebSocketTownSquare implements TownSquareTransport {
     if (message.type === "photo") {
       if (message.player.id === this.connectionId) return;
       try {
-        const imageDataUrl = await this.photos.createSignedUrl(message.objectPath);
+        const imageDataUrl = this.photos.downloadUrl(message.mediaId, message.downloadToken);
         const player = this.toOnlinePlayer(message.player);
         this.playersBySlot.set(player.slot, player);
         this.callbacks.onChat({
@@ -270,7 +292,7 @@ export class WebSocketTownSquare implements TownSquareTransport {
           kind: "image",
           text: "",
           imageDataUrl,
-          objectPath: message.objectPath,
+          mediaId: message.mediaId,
           sentAt: message.sentAt,
           durationMs: message.durationMs,
         });
@@ -279,7 +301,37 @@ export class WebSocketTownSquare implements TownSquareTransport {
       }
       return;
     }
-    if (message.type === "error") this.callbacks.onNotice(message.message);
+    if (message.type === "error") {
+      if (message.code.startsWith("photo_")) this.rejectPendingPhotoGrant(new Error(message.message));
+      this.callbacks.onNotice(message.message);
+    }
+  }
+
+  private requestPhotoGrant(): Promise<PhotoGrantMessage> {
+    if (this.socket?.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error("The world socket is not connected."));
+    }
+    if (this.pendingPhotoGrant) {
+      return Promise.reject(new Error("A temporary picture is already being prepared."));
+    }
+
+    return new Promise<PhotoGrantMessage>((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        if (!this.pendingPhotoGrant) return;
+        this.pendingPhotoGrant = null;
+        reject(new Error("The temporary photo upload permission timed out."));
+      }, PHOTO_GRANT_TIMEOUT_MS);
+      this.pendingPhotoGrant = { resolve, reject, timeout };
+      this.sendJson({ type: "photo-grant" });
+    });
+  }
+
+  private rejectPendingPhotoGrant(error: Error): void {
+    const pending = this.pendingPhotoGrant;
+    if (!pending) return;
+    this.pendingPhotoGrant = null;
+    window.clearTimeout(pending.timeout);
+    pending.reject(error);
   }
 
   private handleStateBatch(buffer: ArrayBuffer): void {

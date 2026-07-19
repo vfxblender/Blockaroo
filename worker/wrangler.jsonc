@@ -17,6 +17,15 @@
       "new_sqlite_classes": ["TownSquareRoom"]
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "TEMPORARY_MEDIA",
+      "bucket_name": "blockaroo-temporary-media"
+    }
+  ],
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
   "vars": {
     "ALLOWED_ORIGINS": "https://vfxblender.github.io,http://localhost:5173,http://127.0.0.1:5173",
     "SUPABASE_URL": "https://gjgeairzynwblfrpojyc.supabase.co",

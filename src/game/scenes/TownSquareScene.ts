@@ -683,8 +683,14 @@ export class TownSquareScene extends Phaser.Scene {
     if (value.length > 4096) return false;
     try {
       const imageUrl = new URL(value);
-      const supabaseUrl = new URL(import.meta.env.VITE_SUPABASE_URL as string);
-      return imageUrl.protocol === "https:" && imageUrl.hostname === supabaseUrl.hostname;
+      const allowedOrigins = [
+        import.meta.env.VITE_WORLD_SOCKET_URL as string | undefined,
+        import.meta.env.VITE_SUPABASE_URL as string | undefined,
+      ].filter((candidate): candidate is string => Boolean(candidate?.trim()))
+        .map(candidate => new URL(candidate.trim()).origin);
+      const secureOrLocal = imageUrl.protocol === "https:"
+        || (imageUrl.protocol === "http:" && ["localhost", "127.0.0.1"].includes(imageUrl.hostname));
+      return secureOrLocal && allowedOrigins.includes(imageUrl.origin);
     } catch {
       return false;
     }

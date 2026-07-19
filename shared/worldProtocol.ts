@@ -49,9 +49,13 @@ export interface ChatMessage {
   text: string;
 }
 
+export interface PhotoGrantRequestMessage {
+  type: "photo-grant";
+}
+
 export interface PhotoMessage {
   type: "photo";
-  objectPath: string;
+  mediaId: string;
 }
 
 export interface PingMessage {
@@ -59,7 +63,13 @@ export interface PingMessage {
   sentAt: number;
 }
 
-export type ClientControlMessage = HelloMessage | ProfileMessage | ChatMessage | PhotoMessage | PingMessage;
+export type ClientControlMessage =
+  | HelloMessage
+  | ProfileMessage
+  | ChatMessage
+  | PhotoGrantRequestMessage
+  | PhotoMessage
+  | PingMessage;
 
 export interface WelcomeMessage {
   type: "welcome";
@@ -106,9 +116,17 @@ export interface ServerPhotoMessage {
   type: "photo";
   id: string;
   player: NetworkPlayer;
-  objectPath: string;
+  mediaId: string;
+  downloadToken: string;
   sentAt: number;
   durationMs: number;
+}
+
+export interface PhotoGrantMessage {
+  type: "photo-grant";
+  mediaId: string;
+  uploadToken: string;
+  expiresAt: number;
 }
 
 export interface PongMessage {
@@ -131,6 +149,7 @@ export type ServerControlMessage =
   | CountMessage
   | ServerChatMessage
   | ServerPhotoMessage
+  | PhotoGrantMessage
   | PongMessage
   | ErrorMessage;
 

@@ -17,16 +17,25 @@ import {
 
 interface Env {
   TOWN_SQUARE: DurableObjectNamespace;
+  TEMPORARY_MEDIA: R2Bucket;
   ALLOWED_ORIGINS: string;
   SUPABASE_URL: string;
   SUPABASE_PUBLISHABLE_KEY: string;
   TICKET_SECRET: string;
+  MEDIA_SECRET: string;
 }
 
 interface TicketPayload {
   sub: string;
   exp: number;
   nonce: string;
+}
+
+interface MediaTokenPayload {
+  kind: "media-upload" | "media-download";
+  mediaId: string;
+  sub?: string;
+  exp: number;
 }
 
 interface SocketAttachment {
@@ -46,6 +55,8 @@ interface SocketAttachment {
   updatedAt: number;
   lastChatAt: number;
   lastPhotoAt: number;
+  pendingPhotoId: string;
+  pendingPhotoExpiresAt: number;
 }
 
 interface ProjectedPosition {
@@ -60,14 +71,21 @@ const PLAYER_HALF_SIZE = 21;
 const DETAIL_RADIUS = 650;
 const PRELOAD_RADIUS = 1300;
 const CHAT_RADIUS = 340;
+const PHOTO_RECIPIENT_LIMIT = 12;
 const FULL_RECONCILE_INTERVAL_MS = 15_000;
 const CHAT_RATE_LIMIT_MS = 900;
 const PHOTO_RATE_LIMIT_MS = 12_000;
+const PHOTO_GRANT_LIFETIME_MS = 30_000;
+const PHOTO_DOWNLOAD_LIFETIME_MS = 45_000;
+const PHOTO_RETENTION_MS = 2 * 60_000;
+const MAX_PHOTO_BYTES = 110 * 1024;
 const TICKET_LIFETIME_SECONDS = 75;
 const MAX_TEXT_LENGTH = 120;
 const PROFILE_NAME_LENGTH = 18;
 const COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
 const PATH_SEGMENT_PATTERN = /^[a-z0-9-]+$/;
+const MEDIA_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MEDIA_PREFIX = "temporary/";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -79,6 +97,12 @@ export default {
       return json({ ok: true, service: "blockaroo-world", protocol: WORLD_PROTOCOL_VERSION }, 200, origin, env);
     }
     if (!isAllowedOrigin(origin, env)) return json({ error: "Origin not allowed." }, 403, origin, env);
+
+    const mediaMatch = url.pathname.match(/^\/media\/([^/]+)$/);
+    if (mediaMatch && MEDIA_ID_PATTERN.test(mediaMatch[1])) {
+      if (request.method === "PUT") return uploadTemporaryMedia(request, env, origin, mediaMatch[1]);
+      if (request.method === "GET") return readTemporaryMedia(request, env, origin, mediaMatch[1]);
+    }
 
     if (url.pathname === "/session" && request.method === "POST") {
       return createSocketSession(request, env, origin);
@@ -106,6 +130,9 @@ export default {
 
     return json({ error: "Not found." }, 404, origin, env);
   },
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(cleanupExpiredMedia(env));
+  },
 } satisfies ExportedHandler<Env>;
 
 export class TownSquareRoom implements DurableObject {
@@ -121,7 +148,7 @@ export class TownSquareRoom implements DurableObject {
     height: WORLD_HEIGHT,
   };
 
-  constructor(private readonly ctx: DurableObjectState, _env: Env) {
+  constructor(private readonly ctx: DurableObjectState, private readonly env: Env) {
     const existing = ctx.getWebSockets();
     for (const socket of existing) {
       const attachment = this.readAttachment(socket);
@@ -167,6 +194,8 @@ export class TownSquareRoom implements DurableObject {
       updatedAt: Date.now(),
       lastChatAt: 0,
       lastPhotoAt: 0,
+      pendingPhotoId: "",
+      pendingPhotoExpiresAt: 0,
     };
     server.serializeAttachment(attachment);
     this.ctx.acceptWebSocket(server);
@@ -246,8 +275,12 @@ export class TownSquareRoom implements DurableObject {
       this.publishChat(socket, attachment, message.text);
       return;
     }
+    if (message.type === "photo-grant") {
+      await this.issuePhotoGrant(socket, attachment);
+      return;
+    }
     if (message.type === "photo") {
-      this.publishPhoto(socket, attachment, message.objectPath);
+      await this.publishPhoto(socket, attachment, message.mediaId);
     }
   }
 
@@ -478,22 +511,58 @@ export class TownSquareRoom implements DurableObject {
     }, socket);
   }
 
-  private publishPhoto(socket: WebSocket, player: SocketAttachment, objectPath: string): void {
+  private async issuePhotoGrant(socket: WebSocket, player: SocketAttachment): Promise<void> {
     const now = Date.now();
     if (now - player.lastPhotoAt < PHOTO_RATE_LIMIT_MS) return this.sendError(socket, "photo_rate_limit", "Wait before sharing another picture.");
-    if (typeof objectPath !== "string" || objectPath.length > 180 || !objectPath.startsWith(`${player.authUserId}/`) || !objectPath.endsWith(".jpg")
-      || !/^[a-zA-Z0-9/_\-.]+$/.test(objectPath)) {
-      return this.sendError(socket, "bad_photo_path", "The temporary picture path is invalid.");
+    if (!this.env.MEDIA_SECRET || this.env.MEDIA_SECRET.length < 32) {
+      console.error("MEDIA_SECRET must contain at least 32 characters.");
+      return this.sendError(socket, "photo_unavailable", "Temporary pictures are not configured yet.");
     }
+
+    const mediaId = crypto.randomUUID();
+    const expiresAt = now + PHOTO_GRANT_LIFETIME_MS;
     player.lastPhotoAt = now;
+    player.pendingPhotoId = mediaId;
+    player.pendingPhotoExpiresAt = expiresAt;
     socket.serializeAttachment(player);
+    const uploadToken = await signPayload({
+      kind: "media-upload",
+      mediaId,
+      sub: player.authUserId,
+      exp: Math.floor(expiresAt / 1000),
+    } satisfies MediaTokenPayload, this.env.MEDIA_SECRET);
+    this.sendJson(socket, { type: "photo-grant", mediaId, uploadToken, expiresAt });
+  }
+
+  private async publishPhoto(socket: WebSocket, player: SocketAttachment, mediaId: string): Promise<void> {
+    const now = Date.now();
+    if (!MEDIA_ID_PATTERN.test(mediaId)
+      || player.pendingPhotoId !== mediaId
+      || player.pendingPhotoExpiresAt < now) {
+      return this.sendError(socket, "photo_grant_invalid", "Request a new temporary photo upload.");
+    }
+
+    player.pendingPhotoId = "";
+    player.pendingPhotoExpiresAt = 0;
+    socket.serializeAttachment(player);
+    const object = await this.env.TEMPORARY_MEDIA.head(mediaKey(mediaId));
+    if (!object || object.customMetadata?.ownerId !== player.authUserId) {
+      return this.sendError(socket, "photo_upload_missing", "The temporary picture did not finish uploading.");
+    }
+
+    const downloadToken = await signPayload({
+      kind: "media-download",
+      mediaId,
+      exp: Math.floor((now + PHOTO_DOWNLOAD_LIFETIME_MS) / 1000),
+    } satisfies MediaTokenPayload, this.env.MEDIA_SECRET);
     const id = crypto.randomUUID();
-    this.forNearbyPlayers(player, CHAT_RADIUS, DETAILED_PLAYER_LIMIT, recipient => {
+    this.forNearbyPlayers(player, CHAT_RADIUS, PHOTO_RECIPIENT_LIMIT, recipient => {
       this.sendJson(recipient, {
         type: "photo",
         id,
         player: this.networkPlayer(player, 1, now),
-        objectPath,
+        mediaId,
+        downloadToken,
         sentAt: now,
         durationMs: 12_000,
       });
@@ -683,6 +752,110 @@ export class TownSquareRoom implements DurableObject {
   }
 }
 
+async function uploadTemporaryMedia(
+  request: Request,
+  env: Env,
+  origin: string | null,
+  mediaId: string,
+): Promise<Response> {
+  if (!env.MEDIA_SECRET || env.MEDIA_SECRET.length < 32) {
+    return json({ error: "Temporary pictures are not configured." }, 503, origin, env);
+  }
+  const authorization = request.headers.get("Authorization");
+  if (!authorization?.startsWith("Bearer ")) {
+    return json({ error: "The photo upload grant is missing." }, 401, origin, env);
+  }
+  const payload = await verifyMediaToken(authorization.slice(7), env.MEDIA_SECRET, "media-upload", mediaId);
+  if (!payload?.sub) return json({ error: "The photo upload grant is invalid or expired." }, 401, origin, env);
+  if (request.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase() !== "image/jpeg") {
+    return json({ error: "Temporary pictures must be JPEG files." }, 415, origin, env);
+  }
+
+  const declaredLength = Number(request.headers.get("Content-Length") || 0);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_PHOTO_BYTES) {
+    return json({ error: "The temporary picture is too large." }, 413, origin, env);
+  }
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength <= 3 || bytes.byteLength > MAX_PHOTO_BYTES || !isJpeg(bytes)) {
+    return json({ error: "The temporary picture is not a valid-sized JPEG." }, 400, origin, env);
+  }
+
+  const key = mediaKey(mediaId);
+  const expiresAt = Date.now() + PHOTO_RETENTION_MS;
+  const stored = await env.TEMPORARY_MEDIA.put(key, bytes, {
+    onlyIf: { etagDoesNotMatch: "*" },
+    httpMetadata: { contentType: "image/jpeg", cacheControl: "private, no-store" },
+    customMetadata: { ownerId: payload.sub, expiresAt: String(expiresAt) },
+  });
+  if (!stored) return json({ error: "That one-time photo upload was already used." }, 409, origin, env);
+  return json({ mediaId, expiresAt }, 201, origin, env);
+}
+
+async function readTemporaryMedia(
+  request: Request,
+  env: Env,
+  origin: string | null,
+  mediaId: string,
+): Promise<Response> {
+  if (!env.MEDIA_SECRET || env.MEDIA_SECRET.length < 32) {
+    return json({ error: "Temporary pictures are not configured." }, 503, origin, env);
+  }
+  const token = new URL(request.url).searchParams.get("token");
+  const payload = token
+    ? await verifyMediaToken(token, env.MEDIA_SECRET, "media-download", mediaId)
+    : null;
+  if (!payload) return json({ error: "The temporary picture link is invalid or expired." }, 401, origin, env);
+
+  const key = mediaKey(mediaId);
+  const object = await env.TEMPORARY_MEDIA.get(key);
+  if (!object) return json({ error: "The temporary picture is gone." }, 404, origin, env);
+  const expiresAt = Number(object.customMetadata?.expiresAt || 0);
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    await env.TEMPORARY_MEDIA.delete(key);
+    return json({ error: "The temporary picture expired." }, 410, origin, env);
+  }
+
+  const headers = new Headers({
+    "Content-Type": "image/jpeg",
+    "Content-Length": String(object.size),
+    "Cache-Control": "private, no-store, max-age=0",
+    "X-Content-Type-Options": "nosniff",
+    "Cross-Origin-Resource-Policy": "cross-origin",
+  });
+  if (isAllowedOrigin(origin, env)) {
+    for (const [keyName, value] of Object.entries(corsHeaders(origin))) headers.set(keyName, value);
+  }
+  return new Response(object.body, { status: 200, headers });
+}
+
+async function cleanupExpiredMedia(env: Env): Promise<void> {
+  const now = Date.now();
+  let cursor: string | undefined;
+  for (let page = 0; page < 20; page += 1) {
+    const result = await env.TEMPORARY_MEDIA.list({
+      prefix: MEDIA_PREFIX,
+      cursor,
+      limit: 1_000,
+      include: ["customMetadata"],
+    });
+    const expiredKeys = result.objects
+      .filter(object => Number(object.customMetadata?.expiresAt || 0) <= now)
+      .map(object => object.key);
+    if (expiredKeys.length) await env.TEMPORARY_MEDIA.delete(expiredKeys);
+    if (!result.truncated) return;
+    cursor = result.cursor;
+  }
+}
+
+function mediaKey(mediaId: string): string {
+  return `${MEDIA_PREFIX}${mediaId}.jpg`;
+}
+
+function isJpeg(buffer: ArrayBuffer): boolean {
+  const bytes = new Uint8Array(buffer);
+  return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+}
+
 async function createSocketSession(request: Request, env: Env, origin: string | null): Promise<Response> {
   const authorization = request.headers.get("Authorization");
   if (!authorization?.startsWith("Bearer ")) return json({ error: "Missing Supabase session." }, 401, origin, env);
@@ -711,15 +884,46 @@ async function createSocketSession(request: Request, env: Env, origin: string | 
 }
 
 async function signTicket(payload: TicketPayload, secret: string): Promise<string> {
+  return signPayload(payload, secret);
+}
+
+async function verifyTicket(ticket: string, secret: string): Promise<TicketPayload | null> {
+  const payload = await verifySignedPayload(ticket, secret) as Partial<TicketPayload> | null;
+  if (!payload
+    || typeof payload.sub !== "string"
+    || typeof payload.exp !== "number"
+    || !Number.isFinite(payload.exp)
+    || payload.exp < Math.floor(Date.now() / 1000)) return null;
+  return payload as TicketPayload;
+}
+
+async function verifyMediaToken(
+  token: string,
+  secret: string,
+  kind: MediaTokenPayload["kind"],
+  mediaId: string,
+): Promise<MediaTokenPayload | null> {
+  const payload = await verifySignedPayload(token, secret) as Partial<MediaTokenPayload> | null;
+  if (!payload
+    || payload.kind !== kind
+    || payload.mediaId !== mediaId
+    || typeof payload.exp !== "number"
+    || !Number.isFinite(payload.exp)
+    || payload.exp < Math.floor(Date.now() / 1000)
+    || (payload.sub !== undefined && typeof payload.sub !== "string")) return null;
+  return payload as MediaTokenPayload;
+}
+
+async function signPayload(payload: object, secret: string): Promise<string> {
   const encodedPayload = toBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(encodedPayload));
   return `${encodedPayload}.${toBase64Url(new Uint8Array(signature))}`;
 }
 
-async function verifyTicket(ticket: string, secret: string): Promise<TicketPayload | null> {
+async function verifySignedPayload(token: string, secret: string): Promise<object | null> {
   if (!secret || secret.length < 32) return null;
-  const [encodedPayload, encodedSignature, extra] = ticket.split(".");
+  const [encodedPayload, encodedSignature, extra] = token.split(".");
   if (!encodedPayload || !encodedSignature || extra) return null;
   try {
     const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
@@ -730,9 +934,8 @@ async function verifyTicket(ticket: string, secret: string): Promise<TicketPaylo
       new TextEncoder().encode(encodedPayload),
     );
     if (!valid) return null;
-    const payload = JSON.parse(new TextDecoder().decode(fromBase64Url(encodedPayload))) as TicketPayload;
-    if (typeof payload.sub !== "string" || typeof payload.exp !== "number" || payload.exp < Math.floor(Date.now() / 1000)) return null;
-    return payload;
+    const payload = JSON.parse(new TextDecoder().decode(fromBase64Url(encodedPayload))) as unknown;
+    return payload !== null && typeof payload === "object" ? payload : null;
   } catch {
     return null;
   }
@@ -771,7 +974,7 @@ function corsHeaders(origin: string | null): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": origin ?? "*",
     "Access-Control-Allow-Headers": "Authorization, Content-Type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   };

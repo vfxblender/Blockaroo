@@ -28,5 +28,7 @@ jobs:
           command: deploy
           secrets: |
             TICKET_SECRET
+            MEDIA_SECRET
         env:
           TICKET_SECRET: ${{ secrets.WORLD_TICKET_SECRET }}
+          MEDIA_SECRET: ${{ secrets.WORLD_MEDIA_SECRET }}

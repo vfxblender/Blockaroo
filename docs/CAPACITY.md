@@ -15,6 +15,10 @@ The browser sends on direction changes and once every three seconds while contin
 
 Actual transfer is higher than the table because WebSocket frames, TCP/IP, TLS, JSON control messages, retries, and provider accounting add overhead. Direction-change rate and local crowd density matter far more than the total online count.
 
+## Temporary-photo operations
+
+Photo bytes use Cloudflare R2 rather than Supabase. With 1,000 daily players sharing one photo each to 12 nearby recipients, a 30-day month produces roughly 30,000 R2 writes and 360,000 R2 reads. Cloudflare currently includes 1 million Class A operations, 10 million Class B operations, 10 GB-month of Standard storage, and free internet egress each month. Recheck the official [R2 pricing](https://developers.cloudflare.com/r2/pricing/) before a large launch because provider allowances can change.
+
 ## What scales well
 
 - 1,000 connected players who are mostly idle
@@ -27,7 +31,7 @@ Actual transfer is higher than the table because WebSocket frames, TCP/IP, TLS, 
 
 - all 1,000 players changing direction continuously
 - showing every movement to every other player (intentionally not supported)
-- photos shared frequently; even a 100 KB photo dwarfs movement packets
+- photos shared frequently; R2 egress is free, but each download is still an operation and user bandwidth
 - join/leave storms
 - a map so dense that everyone competes for the nearest 200 slots
 
@@ -37,8 +41,9 @@ Actual transfer is higher than the table because WebSocket frames, TCP/IP, TLS, 
 - zone 3 is count-only
 - one text message per 900 ms and one photo per 12 seconds per connection
 - 120-character live text limit
-- private JPEG-only bucket capped at 200 KB per object
-- client processing targets roughly 100 KB or less per picture
+- private JPEG-only R2 bucket with signed upload and download tokens
+- maximum 110 KB per uploaded picture and 12 nearby recipients
+- two-minute object retention with minutely cleanup
 - authoritative world bounds, sequence checks, ticket expiry, origin allowlist, and duplicate-session replacement
 
 Before advertising a 1,000-player event, run staged tests at 50, 200, 500, and 1,000 connections and measure Durable Object CPU, requests, WebSocket messages, egress, disconnects, and browser frame rate. If one state owner reaches CPU limits, the next step is invisible cell workers behind the same Town Square address—not visible duplicate communities.

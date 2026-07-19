@@ -21,7 +21,7 @@ export interface BlockChatMessage {
   kind: "text" | "image";
   text: string;
   imageDataUrl?: string;
-  objectPath?: string;
+  mediaId?: string;
   sentAt: number;
   durationMs: number;
 }

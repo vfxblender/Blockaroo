@@ -8,8 +8,9 @@ Nashville Town Square remains one player-facing place. The client never asks peo
 flowchart TD
   C["Phaser clients"] -->|"ticket + WebSocket"| W["World Worker"]
   W --> R["Stateful room"]
+  W --> M["Temporary R2 photos"]
   C -->|"anonymous session"| A["Supabase Auth"]
-  C -->|"durable data + private photos"| S["Supabase"]
+  C -->|"durable data"| S["Supabase Postgres"]
   W -->|"validate session once"| A
 ```
 
@@ -50,12 +51,14 @@ Text is a small proximity WebSocket event. It lasts 12 seconds and is delivered 
 Pictures follow a two-plane design:
 
 1. The browser strips metadata by redrawing, resizes to at most 512 px, and compresses to JPEG.
-2. It uploads once to the private `temporary-block-posts` bucket.
-3. The WebSocket carries only the authenticated owner path.
-4. Nearby recipients request a 30-second signed URL.
-5. The sender removes the object after 60 seconds; a scheduled cleanup function catches abandoned uploads after two minutes.
+2. It requests a one-time upload grant through its authenticated world socket.
+3. The room rate-limits the request and signs a 30-second upload token for one random media ID.
+4. The browser uploads at most 110 KB directly to the private `blockaroo-temporary-media` R2 bucket through the Worker.
+5. The room verifies that object and sends a 45-second download token only to the 12 closest players inside the chat radius.
+6. Recipients download through the Worker; the image is never written to Supabase.
+7. A minutely Cloudflare cleanup removes expired objects after roughly two minutes.
 
-This keeps binary photo data out of the world room and prevents one image from being repeated through every movement connection.
+The WebSocket carries grants and metadata, not image bytes. HMAC tokens bind each upload to its authenticated sender, download links expire quickly, R2 remains private, and abandoned uploads are automatically removed.
 
 ## Expansion model
 

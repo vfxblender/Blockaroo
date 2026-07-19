@@ -16,7 +16,7 @@ The repository is ready to grow into multiple cities, private homes and overworl
 - stateful WebSocket world transport with a working Supabase Realtime fallback
 - one logical Town Square with a 1,000-connection room limit
 - server-calculated three-zone interest management: 50 detailed, 150 preloaded, everyone else counted only
-- private Supabase Storage pictures; WebSockets carry only object paths
+- private, short-lived Cloudflare R2 pictures authorized through the world socket
 - durable Supabase schema for cities, spaces, profiles, homes, neighbors, and BlockDrops
 
 ## Runtime split
@@ -27,7 +27,7 @@ The repository is ready to grow into multiple cities, private homes and overworl
 | Movement, presence, proximity text/photo events | Cloudflare Durable Object WebSocket room |
 | Identity and anonymous sessions | Supabase Auth |
 | Profiles, cities, homes, neighbors, BlockDrops | Supabase Postgres + RLS |
-| Temporary picture bytes | Private Supabase Storage |
+| Temporary picture bytes | Private Cloudflare R2 bucket |
 | Static site | GitHub Pages |
 
 If `VITE_WORLD_SOCKET_URL` is blank, the client automatically uses the existing Supabase Realtime channel. That makes deployment reversible: the game remains playable before the Worker is configured.
@@ -61,9 +61,10 @@ Set `VITE_WORLD_SOCKET_URL=http://localhost:8787` in `.env.local` to use it.
 
 Follow [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). The short version is:
 
-1. deploy the Supabase migrations and cleanup function;
-2. deploy the Cloudflare world Worker;
-3. save its origin as the GitHub repository variable `VITE_WORLD_SOCKET_URL`;
-4. run the existing `Deploy Blockaroo` Pages workflow.
+1. deploy the durable Supabase schema;
+2. create the private Cloudflare R2 bucket;
+3. deploy the Cloudflare world Worker;
+4. save its origin as the GitHub repository variable `VITE_WORLD_SOCKET_URL`;
+5. run the existing `Deploy Blockaroo` Pages workflow.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the packet/zone design and [docs/CAPACITY.md](docs/CAPACITY.md) for realistic scaling limits.
