@@ -5,7 +5,7 @@ import { RealtimeTownSquare, type OnlinePlayer } from "../systems/RealtimeTownSq
 import { WorldRouter } from "../systems/WorldRouter";
 import type { PlayerIdentity } from "../types/world";
 
-type Remote = { body: Phaser.GameObjects.Container; target: Phaser.Math.Vector2 };
+type Remote = { body: Phaser.GameObjects.Container; target: Phaser.Math.Vector2; updatedAt: number };
 
 export class TownSquareScene extends Phaser.Scene {
   private profile = loadProfile();
@@ -19,7 +19,6 @@ export class TownSquareScene extends Phaser.Scene {
   private network: RealtimeTownSquare | null = null;
   private statusElement: HTMLElement | null = null;
   private lastBroadcastAt = 0;
-  private lastPresenceAt = 0;
   private onlineCount = 1;
   private connectionStatus: "connecting" | "online" | "offline" | "error" = "connecting";
   private reconnecting = false;
@@ -94,11 +93,6 @@ export class TownSquareScene extends Phaser.Scene {
       this.network?.sendMovement(this.profile, this.player.x, this.player.y);
       this.lastBroadcastAt = time;
     }
-    if (time - this.lastPresenceAt >= 2500) {
-      this.network?.updatePresence(this.profile, this.player.x, this.player.y);
-      this.lastPresenceAt = time;
-    }
-
     const blend = 1 - Math.exp(-delta * 0.012);
     for (const remote of this.remotes.values()) {
       remote.body.x = Phaser.Math.Linear(remote.body.x, remote.target.x, blend);
@@ -252,12 +246,12 @@ export class TownSquareScene extends Phaser.Scene {
     }
     if (this.wasHidden) {
       this.wasHidden = false;
-      void this.reconnectMultiplayer(true);
+      void this.reconnectMultiplayer();
     }
   };
 
   private readonly handleNetworkResume = (): void => {
-    if (document.visibilityState === "visible" && navigator.onLine) void this.reconnectMultiplayer(true);
+    if (document.visibilityState === "visible" && navigator.onLine) void this.reconnectMultiplayer();
   };
 
   private scheduleReconnect(): void {
@@ -282,6 +276,8 @@ export class TownSquareScene extends Phaser.Scene {
   private upsertRemote(player: OnlinePlayer): void {
     const existing = this.remotes.get(player.id);
     if (existing) {
+      if (player.updatedAt < existing.updatedAt) return;
+      existing.updatedAt = player.updatedAt;
       existing.target.set(player.x, player.y);
       (existing.body.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(Phaser.Display.Color.HexStringToColor(player.color).color);
       (existing.body.getAt(1) as Phaser.GameObjects.Text).setText(player.username);
@@ -292,6 +288,7 @@ export class TownSquareScene extends Phaser.Scene {
     this.remotes.set(player.id, {
       body,
       target: new Phaser.Math.Vector2(player.x, player.y),
+      updatedAt: player.updatedAt,
     });
   }
 
