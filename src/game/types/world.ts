@@ -1,1 +1,20 @@
-ZXhwb3J0IHR5cGUgQ2l0eUlkID0gIm5hc2h2aWxsZSI7CmV4cG9ydCB0eXBlIFNwYWNlS2luZCA9ICJ0b3duLXNxdWFyZSIgfCAib3ZlcndvcmxkIiB8ICJob3VzZSIgfCAidGhlYXRlciI7CgpleHBvcnQgaW50ZXJmYWNlIFdvcmxkTG9jYXRpb24gewogIGNpdHlJZDogQ2l0eUlkOwogIHNwYWNlSWQ6IHN0cmluZzsKICBraW5kOiBTcGFjZUtpbmQ7Cn0KCmV4cG9ydCBpbnRlcmZhY2UgUGxheWVySWRlbnRpdHkgewogIGlkOiBzdHJpbmc7CiAgdXNlcm5hbWU6IHN0cmluZzsKICBjb2xvcjogc3RyaW5nOwp9CgpleHBvcnQgaW50ZXJmYWNlIFBsYXllclN0YXRlIGV4dGVuZHMgUGxheWVySWRlbnRpdHkgewogIHg6IG51bWJlcjsKICB5OiBudW1iZXI7CiAgbG9jYXRpb246IFdvcmxkTG9jYXRpb247Cn0K
+export type CityId = "nashville";
+export type SpaceKind = "town-square" | "overworld" | "house" | "theater";
+
+export interface WorldLocation {
+  cityId: CityId;
+  spaceId: string;
+  kind: SpaceKind;
+}
+
+export interface PlayerIdentity {
+  id: string;
+  username: string;
+  color: string;
+}
+
+export interface PlayerState extends PlayerIdentity {
+  x: number;
+  y: number;
+  location: WorldLocation;
+}
