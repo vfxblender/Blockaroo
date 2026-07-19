@@ -13,6 +13,7 @@ export class TownSquareScene extends Phaser.Scene {
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
   private joystick = new Phaser.Math.Vector2();
+  private moveTarget: Phaser.Math.Vector2 | null = null;
   private remotes: Remote[] = [];
   private router = new WorldRouter();
 
@@ -33,6 +34,9 @@ export class TownSquareScene extends Phaser.Scene {
     this.keys = this.input.keyboard!.addKeys("W,A,S,D") as Record<string, Phaser.Input.Keyboard.Key>;
     this.createDemoNeighbors();
     this.createHud();
+    this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+      this.moveTarget = new Phaser.Math.Vector2(pointer.worldX, pointer.worldY);
+    });
   }
 
   update(_time: number, delta: number): void {
@@ -46,9 +50,21 @@ export class TownSquareScene extends Phaser.Scene {
       if (this.cursors.down.isDown || this.keys.S.isDown) y += 1;
     }
     x += this.joystick.x; y += this.joystick.y;
+    if (x !== 0 || y !== 0) {
+      this.moveTarget = null;
+    } else if (this.moveTarget) {
+      const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, this.moveTarget.x, this.moveTarget.y);
+      if (distance < 10) {
+        this.moveTarget = null;
+      } else {
+        x = this.moveTarget.x - this.player.x;
+        y = this.moveTarget.y - this.player.y;
+      }
+    }
     const direction = new Phaser.Math.Vector2(x, y).normalize();
     const body = this.player.body as Phaser.Physics.Arcade.Body;
     body.setVelocity(direction.x * speed, direction.y * speed);
+    this.player.setDepth(this.player.y);
 
     for (const remote of this.remotes) remote.body.x = Phaser.Math.Linear(remote.body.x, remote.target.x, delta * 0.00055), remote.body.y = Phaser.Math.Linear(remote.body.y, remote.target.y, delta * 0.00055);
   }
@@ -78,7 +94,11 @@ export class TownSquareScene extends Phaser.Scene {
     block.setSize(42, 42);
     block.setDepth(y);
     if (!local) {
-      square.on("pointerdown", () => this.showBubble(block.x, block.y - 50, `Say hi to ${identity.username} — live chat comes with multiplayer.`));
+      square.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
+        event.stopPropagation();
+        this.moveTarget = null;
+        this.showBubble(block.x, block.y - 50, `Say hi to ${identity.username} — live chat comes with multiplayer.`);
+      });
     }
     return block;
   }
@@ -100,29 +120,65 @@ export class TownSquareScene extends Phaser.Scene {
   private createHud(): void {
     const hud = document.createElement("section");
     hud.className = "hud";
-    hud.innerHTML = `<div class="topbar"><div class="brand">BLOCKAROO<small>Nashville · Town Square</small></div><button class="edit">Your block</button></div><aside class="panel" hidden><h2>Your block</h2><label class="field">Display name<input maxlength="18" value="${this.escape(this.profile.username)}" /></label><label class="field">Block color<div class="swatches">${PALETTE.map(c => `<button class="swatch ${c === this.profile.color ? "selected" : ""}" aria-label="Choose color" style="background:${c}" data-color="${c}"></button>`).join("")}</div></label><button class="save">Enter Town Square</button></aside><div class="hint">Move with WASD / arrows or the joystick. Tap a neighbor.</div><div class="joystick" aria-label="Movement joystick"></div>`;
+    hud.innerHTML = `<div class="topbar"><div class="brand">BLOCKAROO<small>Nashville · Town Square</small></div><button class="edit">Your block</button></div><aside class="panel" hidden><h2>Your block</h2><label class="field">Display name<input maxlength="18" value="${this.escape(this.profile.username)}" /></label><label class="field">Block color<div class="swatches">${PALETTE.map(c => `<button class="swatch ${c === this.profile.color ? "selected" : ""}" aria-label="Choose color" style="background:${c}" data-color="${c}"></button>`).join("")}</div></label><button class="save">Enter Town Square</button></aside><div class="hint">WASD / arrows · click or tap the ground · drag the joystick</div><div class="joystick" aria-label="Movement joystick"><span class="joystick-knob"></span></div>`;
     document.body.append(hud);
     const panel = hud.querySelector<HTMLElement>(".panel")!;
-    hud.querySelector<HTMLButtonElement>(".edit")!.onclick = () => { panel.hidden = !panel.hidden; };
+    const nameInput = panel.querySelector<HTMLInputElement>("input")!;
+    const keyboard = this.input.keyboard!;
+    nameInput.addEventListener("focus", () => {
+      keyboard.enabled = false;
+      this.moveTarget = null;
+      (this.player.body as Phaser.Physics.Arcade.Body).setVelocity(0);
+    });
+    nameInput.addEventListener("blur", () => { keyboard.enabled = true; });
+    hud.querySelector<HTMLButtonElement>(".edit")!.onclick = () => {
+      panel.hidden = !panel.hidden;
+      if (panel.hidden) nameInput.blur();
+    };
     let selected = this.profile.color;
     panel.querySelectorAll<HTMLButtonElement>(".swatch").forEach(swatch => swatch.onclick = () => { selected = swatch.dataset.color!; panel.querySelectorAll(".swatch").forEach(x => x.classList.toggle("selected", x === swatch)); });
     panel.querySelector<HTMLButtonElement>(".save")!.onclick = () => {
-      const username = panel.querySelector<HTMLInputElement>("input")!.value.trim().slice(0, 18) || "New Neighbor";
+      const username = nameInput.value.trim().slice(0, 18) || "New Neighbor";
       this.profile = { ...this.profile, username, color: selected };
       saveProfile(this.profile);
       this.nameLabel.setText(username);
       (this.player.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(Phaser.Display.Color.HexStringToColor(selected).color);
+      nameInput.blur();
       panel.hidden = true;
     };
     const stick = hud.querySelector<HTMLElement>(".joystick")!;
-    const move = (event: PointerEvent) => { const box = stick.getBoundingClientRect(); this.joystick.set((event.clientX - (box.left + box.width / 2)) / 42, (event.clientY - (box.top + box.height / 2)) / 42).limit(1); };
-    stick.addEventListener("pointerdown", event => { stick.setPointerCapture(event.pointerId); move(event); });
-    stick.addEventListener("pointermove", event => { if (stick.hasPointerCapture(event.pointerId)) move(event); });
-    const stopJoystick = () => this.joystick.set(0);
-    stick.addEventListener("pointerup", stopJoystick);
-    stick.addEventListener("pointercancel", stopJoystick);
+    const knob = stick.querySelector<HTMLElement>(".joystick-knob")!;
+    let joystickPointer: number | null = null;
+    const moveJoystick = (event: PointerEvent) => {
+      if (event.pointerId !== joystickPointer) return;
+      event.preventDefault();
+      const box = stick.getBoundingClientRect();
+      const rawX = event.clientX - (box.left + box.width / 2);
+      const rawY = event.clientY - (box.top + box.height / 2);
+      this.joystick.set(rawX / 42, rawY / 42).limit(1);
+      knob.style.transform = `translate(${this.joystick.x * 31}px, ${this.joystick.y * 31}px)`;
+      this.moveTarget = null;
+    };
+    const startJoystick = (event: PointerEvent) => {
+      joystickPointer = event.pointerId;
+      stick.setPointerCapture(event.pointerId);
+      moveJoystick(event);
+    };
+    const stopJoystick = (event?: PointerEvent) => {
+      if (event && joystickPointer !== null && event.pointerId !== joystickPointer) return;
+      joystickPointer = null;
+      this.joystick.set(0);
+      knob.style.transform = "translate(0, 0)";
+    };
+    stick.addEventListener("pointerdown", startJoystick);
+    window.addEventListener("pointermove", moveJoystick, { passive: false });
     window.addEventListener("pointerup", stopJoystick);
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => window.removeEventListener("pointerup", stopJoystick));
+    window.addEventListener("pointercancel", stopJoystick);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      window.removeEventListener("pointermove", moveJoystick);
+      window.removeEventListener("pointerup", stopJoystick);
+      window.removeEventListener("pointercancel", stopJoystick);
+    });
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => hud.remove());
   }
 
