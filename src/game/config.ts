@@ -1,1 +1,9 @@
-ZXhwb3J0IGNvbnN0IFdPUkxEID0gewogIGNpdHlJZDogIm5hc2h2aWxsZSIsCiAgc3BhY2VJZDogInRvd24tc3F1YXJlIiwKICB3aWR0aDogMjIwMCwKICBoZWlnaHQ6IDE1MDAsCiAgY2hhdFJhZGl1czogMjgwLAp9IGFzIGNvbnN0OwoKZXhwb3J0IGNvbnN0IFBBTEVUVEUgPSBbIiNmZjZiNmIiLCAiI2ZmZDE2NiIsICIjMDZkNmEwIiwgIiM0Y2M5ZjAiLCAiI2E3OGJmYSIsICIjZmI3MTg1Il07Cg==
+export const WORLD = {
+  cityId: "nashville",
+  spaceId: "town-square",
+  width: 2200,
+  height: 1500,
+  chatRadius: 280,
+} as const;
+
+export const PALETTE = ["#ff6b6b", "#ffd166", "#06d6a0", "#4cc9f0", "#a78bfa", "#fb7185"];
