@@ -1,1 +1,21 @@
-aW1wb3J0IHsgUEFMRVRURSB9IGZyb20gIi4uL2NvbmZpZyI7CmltcG9ydCB0eXBlIHsgUGxheWVySWRlbnRpdHkgfSBmcm9tICIuLi90eXBlcy93b3JsZCI7Cgpjb25zdCBTVE9SQUdFX0tFWSA9ICJibG9ja2Fyb28ucHJvZmlsZSI7CgpleHBvcnQgZnVuY3Rpb24gbG9hZFByb2ZpbGUoKTogUGxheWVySWRlbnRpdHkgewogIGNvbnN0IHNhdmVkID0gbG9jYWxTdG9yYWdlLmdldEl0ZW0oU1RPUkFHRV9LRVkpOwogIGlmIChzYXZlZCkgcmV0dXJuIEpTT04ucGFyc2Uoc2F2ZWQpIGFzIFBsYXllcklkZW50aXR5OwoKICBjb25zdCBwcm9maWxlID0gewogICAgaWQ6IGNyeXB0by5yYW5kb21VVUlEKCksCiAgICB1c2VybmFtZTogIk5ldyBOZWlnaGJvciIsCiAgICBjb2xvcjogUEFMRVRURVswXSwKICB9OwogIGxvY2FsU3RvcmFnZS5zZXRJdGVtKFNUT1JBR0VfS0VZLCBKU09OLnN0cmluZ2lmeShwcm9maWxlKSk7CiAgcmV0dXJuIHByb2ZpbGU7Cn0KCmV4cG9ydCBmdW5jdGlvbiBzYXZlUHJvZmlsZShwcm9maWxlOiBQbGF5ZXJJZGVudGl0eSk6IHZvaWQgewogIGxvY2FsU3RvcmFnZS5zZXRJdGVtKFNUT1JBR0VfS0VZLCBKU09OLnN0cmluZ2lmeShwcm9maWxlKSk7Cn0K
+import { PALETTE } from "../config";
+import type { PlayerIdentity } from "../types/world";
+
+const STORAGE_KEY = "blockaroo.profile";
+
+export function loadProfile(): PlayerIdentity {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) return JSON.parse(saved) as PlayerIdentity;
+
+  const profile = {
+    id: crypto.randomUUID(),
+    username: "New Neighbor",
+    color: PALETTE[0],
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(profile));
+  return profile;
+}
+
+export function saveProfile(profile: PlayerIdentity): void {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(profile));
+}
