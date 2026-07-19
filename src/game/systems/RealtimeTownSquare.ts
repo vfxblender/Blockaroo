@@ -26,7 +26,7 @@ interface HelloPayload {
 const CHANNEL_NAME = "city:nashville:town-square";
 
 export class RealtimeTownSquare {
-  private _connectionId = crypto.randomUUID();
+  private _connectionId: string = crypto.randomUUID();
   private channel: RealtimeChannel | null = null;
   private authUserId = "";
   private currentState: OnlinePlayer | null = null;
@@ -44,7 +44,6 @@ export class RealtimeTownSquare {
 
     const generation = ++this.generation;
     await this.removeCurrentChannel();
-    this._connectionId = crypto.randomUUID();
     this.callbacks.onStatus("connecting");
     const existing = await supabase.auth.getSession();
     if (existing.error) throw existing.error;
@@ -59,6 +58,9 @@ export class RealtimeTownSquare {
     if (generation !== this.generation) return this.connectionId;
 
     this.authUserId = session.user.id;
+    // A stable key prevents refresh/reconnect ghosts from being counted as
+    // separate people while the old socket is timing out on the server.
+    this._connectionId = session.user.id;
     this.currentState = this.makeState(profile, x, y);
     const connectionId = this.connectionId;
     const channel = supabase.channel(CHANNEL_NAME, {
@@ -142,9 +144,15 @@ export class RealtimeTownSquare {
 
   private syncPresence(channel: RealtimeChannel, connectionId: string): void {
     const state = channel.presenceState<OnlinePlayer>();
-    const allPlayers = Object.entries(state).flatMap(([presenceKey, presences]) =>
-      presences.map(player => ({ ...player, id: presenceKey })),
-    );
+    const latestByUser = new Map<string, OnlinePlayer>();
+    for (const [presenceKey, presences] of Object.entries(state)) {
+      for (const presence of presences) {
+        const player = { ...presence, id: presenceKey };
+        const existing = latestByUser.get(presenceKey);
+        if (!existing || player.updatedAt >= existing.updatedAt) latestByUser.set(presenceKey, player);
+      }
+    }
+    const allPlayers = [...latestByUser.values()];
     this.callbacks.onCount(allPlayers.length);
     this.callbacks.onPlayers(allPlayers.filter(player => player.id !== connectionId));
   }
