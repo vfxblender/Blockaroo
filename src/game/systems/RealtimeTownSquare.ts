@@ -12,7 +12,9 @@ export interface OnlinePlayer extends PlayerIdentity {
 export interface BlockChatMessage {
   id: string;
   player: OnlinePlayer;
+  kind?: "text" | "image";
   text: string;
+  imageDataUrl?: string;
   sentAt: number;
   durationMs: number;
 }
@@ -145,7 +147,30 @@ export class RealtimeTownSquare {
     const message: BlockChatMessage = {
       id: crypto.randomUUID(),
       player: this.currentState,
+      kind: "text",
       text: text.slice(0, 120),
+      sentAt: Date.now(),
+      durationMs: 12_000,
+    };
+    void this.channel.send({
+      type: "broadcast",
+      event: "chat_message",
+      payload: message,
+    });
+    return message;
+  }
+
+  sendImage(profile: PlayerIdentity, imageDataUrl: string, x: number, y: number): BlockChatMessage | null {
+    if (!this.channel || !this.subscribed) return null;
+    this.currentState = this.makeState(profile, x, y);
+    const message: BlockChatMessage = {
+      id: crypto.randomUUID(),
+      player: this.currentState,
+      kind: "image",
+      // Keep text present so an older client degrades to an empty speech card
+      // instead of throwing while a new deployment is rolling out.
+      text: "",
+      imageDataUrl,
       sentAt: Date.now(),
       durationMs: 12_000,
     };
