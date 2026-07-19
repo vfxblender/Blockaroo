@@ -1,10 +1,11 @@
 import Phaser from "phaser";
 import { PALETTE, WORLD } from "../config";
 import { loadProfile, saveProfile } from "../systems/LocalProfile";
+import { RealtimeTownSquare, type OnlinePlayer } from "../systems/RealtimeTownSquare";
 import { WorldRouter } from "../systems/WorldRouter";
 import type { PlayerIdentity } from "../types/world";
 
-type Remote = { body: Phaser.GameObjects.Container; target: Phaser.Math.Vector2; label: string };
+type Remote = { body: Phaser.GameObjects.Container; target: Phaser.Math.Vector2 };
 
 export class TownSquareScene extends Phaser.Scene {
   private profile = loadProfile();
@@ -14,7 +15,11 @@ export class TownSquareScene extends Phaser.Scene {
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
   private joystick = new Phaser.Math.Vector2();
   private moveTarget: Phaser.Math.Vector2 | null = null;
-  private remotes: Remote[] = [];
+  private remotes = new Map<string, Remote>();
+  private network: RealtimeTownSquare | null = null;
+  private statusElement: HTMLElement | null = null;
+  private lastBroadcastAt = 0;
+  private lastPresenceAt = 0;
   private router = new WorldRouter();
 
   constructor() { super("TownSquare"); }
@@ -23,7 +28,9 @@ export class TownSquareScene extends Phaser.Scene {
     this.cameras.main.setBounds(0, 0, WORLD.width, WORLD.height);
     this.physics.world.setBounds(0, 0, WORLD.width, WORLD.height);
     this.drawWorld();
-    this.player = this.makePlayer(this.profile, 1090, 760, true);
+    const spawnAngle = Math.random() * Math.PI * 2;
+    const spawnRadius = Phaser.Math.Between(175, 285);
+    this.player = this.makePlayer(this.profile, 1100 + Math.cos(spawnAngle) * spawnRadius, 750 + Math.sin(spawnAngle) * spawnRadius, true);
     this.nameLabel = this.player.getAt(1) as Phaser.GameObjects.Text;
     this.physics.add.existing(this.player);
     (this.player.body as Phaser.Physics.Arcade.Body).setCollideWorldBounds(true);
@@ -34,14 +41,19 @@ export class TownSquareScene extends Phaser.Scene {
     // Keep WASD available to normal browser text fields. Movement still reads
     // the key state, but Phaser must not call preventDefault for these letters.
     this.keys = this.input.keyboard!.addKeys("W,A,S,D", false) as Record<string, Phaser.Input.Keyboard.Key>;
-    this.createDemoNeighbors();
     this.createHud();
+    void this.startMultiplayer();
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
       this.moveTarget = new Phaser.Math.Vector2(pointer.worldX, pointer.worldY);
     });
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      void this.network?.disconnect();
+      for (const remote of this.remotes.values()) remote.body.destroy(true);
+      this.remotes.clear();
+    });
   }
 
-  update(_time: number, delta: number): void {
+  update(time: number, delta: number): void {
     const speed = 220;
     let x = 0; let y = 0;
     const isEditingText = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
@@ -68,7 +80,21 @@ export class TownSquareScene extends Phaser.Scene {
     body.setVelocity(direction.x * speed, direction.y * speed);
     this.player.setDepth(this.player.y);
 
-    for (const remote of this.remotes) remote.body.x = Phaser.Math.Linear(remote.body.x, remote.target.x, delta * 0.00055), remote.body.y = Phaser.Math.Linear(remote.body.y, remote.target.y, delta * 0.00055);
+    if (time - this.lastBroadcastAt >= 80 && body.speed > 0) {
+      this.network?.sendMovement(this.profile, this.player.x, this.player.y);
+      this.lastBroadcastAt = time;
+    }
+    if (time - this.lastPresenceAt >= 2500) {
+      this.network?.updatePresence(this.profile, this.player.x, this.player.y);
+      this.lastPresenceAt = time;
+    }
+
+    const blend = 1 - Math.exp(-delta * 0.012);
+    for (const remote of this.remotes.values()) {
+      remote.body.x = Phaser.Math.Linear(remote.body.x, remote.target.x, blend);
+      remote.body.y = Phaser.Math.Linear(remote.body.y, remote.target.y, blend);
+      remote.body.setDepth(remote.body.y);
+    }
   }
 
   private drawWorld(): void {
@@ -99,31 +125,19 @@ export class TownSquareScene extends Phaser.Scene {
       square.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
         event.stopPropagation();
         this.moveTarget = null;
-        this.showBubble(block.x, block.y - 50, `Say hi to ${identity.username} — live chat comes with multiplayer.`);
+        const currentName = (block.getAt(1) as Phaser.GameObjects.Text).text;
+        this.showBubble(block.x, block.y - 50, `${currentName} is online. Nearby chat comes next.`);
       });
     }
     return block;
   }
 
-  private createDemoNeighbors(): void {
-    const neighbors = [
-      { id: "luna", username: "Luna", color: PALETTE[4], x: 730, y: 600 },
-      { id: "miles", username: "Miles", color: PALETTE[1], x: 1490, y: 850 },
-      { id: "sol", username: "Sol", color: PALETTE[2], x: 840, y: 1080 },
-      { id: "kai", username: "Kai", color: PALETTE[0], x: 1430, y: 450 },
-    ];
-    for (const neighbor of neighbors) {
-      const body = this.makePlayer(neighbor, neighbor.x, neighbor.y);
-      this.remotes.push({ body, label: neighbor.username, target: new Phaser.Math.Vector2(neighbor.x, neighbor.y) });
-      this.time.addEvent({ delay: Phaser.Math.Between(2500, 5000), loop: true, callback: () => this.remotes.find(r => r.body === body)!.target.set(Phaser.Math.Between(520, 1680), Phaser.Math.Between(360, 1160)) });
-    }
-  }
-
   private createHud(): void {
     const hud = document.createElement("section");
     hud.className = "hud";
-    hud.innerHTML = `<div class="topbar"><div class="brand">BLOCKAROO<small>Nashville · Town Square</small></div><button class="edit">Your block</button></div><aside class="panel" hidden><h2>Your block</h2><label class="field">Display name<input maxlength="18" value="${this.escape(this.profile.username)}" /></label><label class="field">Block color<div class="swatches">${PALETTE.map(c => `<button class="swatch ${c === this.profile.color ? "selected" : ""}" aria-label="Choose color" style="background:${c}" data-color="${c}"></button>`).join("")}</div></label><button class="save">Enter Town Square</button></aside><div class="hint">WASD / arrows · click or tap the ground · drag the joystick</div><div class="joystick" aria-label="Movement joystick"><span class="joystick-knob"></span></div>`;
+    hud.innerHTML = `<div class="topbar"><div class="brand">BLOCKAROO<small>Nashville · Town Square</small><span class="connection is-connecting">Connecting…</span></div><button class="edit">Your block</button></div><aside class="panel" hidden><h2>Your block</h2><label class="field">Display name<input maxlength="18" value="${this.escape(this.profile.username)}" /></label><label class="field">Block color<div class="swatches">${PALETTE.map(c => `<button class="swatch ${c === this.profile.color ? "selected" : ""}" aria-label="Choose color" style="background:${c}" data-color="${c}"></button>`).join("")}</div></label><button class="save">Enter Town Square</button></aside><div class="hint">WASD / arrows · click or tap the ground · drag the joystick</div><div class="joystick" aria-label="Movement joystick"><span class="joystick-knob"></span></div>`;
     document.body.append(hud);
+    this.statusElement = hud.querySelector<HTMLElement>(".connection")!;
     const panel = hud.querySelector<HTMLElement>(".panel")!;
     const nameInput = panel.querySelector<HTMLInputElement>("input")!;
     const keyboard = this.input.keyboard!;
@@ -149,6 +163,7 @@ export class TownSquareScene extends Phaser.Scene {
       saveProfile(this.profile);
       this.nameLabel.setText(username);
       (this.player.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(Phaser.Display.Color.HexStringToColor(selected).color);
+      this.network?.updatePresence(this.profile, this.player.x, this.player.y);
       nameInput.blur();
       panel.hidden = true;
     };
@@ -186,6 +201,55 @@ export class TownSquareScene extends Phaser.Scene {
       window.removeEventListener("pointercancel", stopJoystick);
     });
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => hud.remove());
+  }
+
+  private async startMultiplayer(): Promise<void> {
+    this.network = new RealtimeTownSquare({
+      onPlayers: players => this.syncOnlinePlayers(players),
+      onMovement: player => this.upsertRemote(player),
+      onStatus: status => this.setConnectionStatus(status),
+    });
+
+    try {
+      const connectionId = await this.network.connect(this.profile, this.player.x, this.player.y);
+      this.profile = { ...this.profile, id: connectionId };
+    } catch (error) {
+      console.error("Blockaroo multiplayer connection failed", error);
+      this.setConnectionStatus("error");
+    }
+  }
+
+  private syncOnlinePlayers(players: OnlinePlayer[]): void {
+    const activeIds = new Set(players.map(player => player.id));
+    for (const [id, remote] of this.remotes) {
+      if (!activeIds.has(id)) {
+        remote.body.destroy(true);
+        this.remotes.delete(id);
+      }
+    }
+    for (const player of players) this.upsertRemote(player);
+  }
+
+  private upsertRemote(player: OnlinePlayer): void {
+    const existing = this.remotes.get(player.id);
+    if (existing) {
+      existing.target.set(player.x, player.y);
+      (existing.body.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(Phaser.Display.Color.HexStringToColor(player.color).color);
+      (existing.body.getAt(1) as Phaser.GameObjects.Text).setText(player.username);
+      return;
+    }
+
+    const body = this.makePlayer(player, player.x, player.y);
+    this.remotes.set(player.id, {
+      body,
+      target: new Phaser.Math.Vector2(player.x, player.y),
+    });
+  }
+
+  private setConnectionStatus(status: "connecting" | "online" | "offline" | "error"): void {
+    if (!this.statusElement) return;
+    this.statusElement.className = `connection is-${status}`;
+    this.statusElement.textContent = status === "online" ? "Live" : status === "connecting" ? "Connecting…" : status === "offline" ? "Offline" : "Connection error";
   }
 
   private showBubble(x: number, y: number, text: string): void {
