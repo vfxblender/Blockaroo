@@ -1,33 +1,8 @@
 import type { RealtimeChannel } from "@supabase/supabase-js";
-import { supabase } from "../../services/supabase";
+import { getOrCreateAnonymousSession, supabase } from "../../services/supabase";
+import { WORLD } from "../config";
 import type { PlayerIdentity } from "../types/world";
-
-export interface OnlinePlayer extends PlayerIdentity {
-  authUserId: string;
-  x: number;
-  y: number;
-  updatedAt: number;
-}
-
-export interface BlockChatMessage {
-  id: string;
-  player: OnlinePlayer;
-  kind?: "text" | "image";
-  text: string;
-  imageDataUrl?: string;
-  sentAt: number;
-  durationMs: number;
-}
-
-type ConnectionStatus = "connecting" | "online" | "offline" | "error";
-
-interface RealtimeCallbacks {
-  onPlayers(players: OnlinePlayer[]): void;
-  onMovement(player: OnlinePlayer): void;
-  onChat(message: BlockChatMessage): void;
-  onCount(count: number): void;
-  onStatus(status: ConnectionStatus): void;
-}
+import type { BlockChatMessage, OnlinePlayer, TownSquareCallbacks, TownSquareTransport } from "./TownSquareTransport";
 
 interface HelloPayload {
   player: OnlinePlayer;
@@ -36,15 +11,20 @@ interface HelloPayload {
 
 const CHANNEL_NAME = "city:nashville:town-square";
 
-export class RealtimeTownSquare {
+export class RealtimeTownSquare implements TownSquareTransport {
+  readonly mode = "supabase-fallback" as const;
   private _connectionId: string = crypto.randomUUID();
   private channel: RealtimeChannel | null = null;
   private authUserId = "";
   private currentState: OnlinePlayer | null = null;
   private subscribed = false;
   private generation = 0;
+  private movementSequence = 0;
+  private lastMovementSentAt = 0;
+  private lastDirectionX = 0;
+  private lastDirectionY = 0;
 
-  constructor(private readonly callbacks: RealtimeCallbacks) {}
+  constructor(private readonly callbacks: TownSquareCallbacks) {}
 
   get connectionId(): string {
     return this._connectionId;
@@ -56,16 +36,7 @@ export class RealtimeTownSquare {
     const generation = ++this.generation;
     await this.removeCurrentChannel();
     this.callbacks.onStatus("connecting");
-    const existing = await supabase.auth.getSession();
-    if (existing.error) throw existing.error;
-
-    let session = existing.data.session;
-    if (!session) {
-      const anonymous = await supabase.auth.signInAnonymously();
-      if (anonymous.error) throw anonymous.error;
-      session = anonymous.data.session;
-    }
-    if (!session) throw new Error("Anonymous authentication did not return a session.");
+    const session = await getOrCreateAnonymousSession();
     if (generation !== this.generation) return this.connectionId;
 
     this.authUserId = session.user.id;
@@ -87,20 +58,25 @@ export class RealtimeTownSquare {
         if (generation === this.generation) this.syncPresence(channel, connectionId);
       })
       .on("broadcast", { event: "player_move" }, ({ payload }) => {
-        const player = payload as OnlinePlayer;
+        const player = this.normalizePlayer(payload as Partial<OnlinePlayer>);
         if (generation === this.generation && player.id !== connectionId) this.callbacks.onMovement(player);
       })
       .on("broadcast", { event: "player_hello" }, ({ payload }) => {
         if (generation !== this.generation) return;
         const hello = payload as HelloPayload;
         if (hello.player.id === connectionId) return;
-        this.callbacks.onMovement(hello.player);
+        this.callbacks.onMovement(this.normalizePlayer(hello.player));
         if (hello.replyRequested) this.sendHello(false);
       })
       .on("broadcast", { event: "chat_message" }, ({ payload }) => {
         if (generation !== this.generation) return;
-        const message = payload as BlockChatMessage;
-        if (message.player.id !== connectionId) this.callbacks.onChat(message);
+        const rawMessage = payload as BlockChatMessage;
+        const message = {
+          ...rawMessage,
+          kind: rawMessage.kind === "image" ? "image" : "text",
+          player: this.normalizePlayer(rawMessage.player),
+        } satisfies BlockChatMessage;
+        if (message.player.id !== connectionId && this.isNearby(message.player)) this.callbacks.onChat(message);
       })
       .subscribe(async status => {
         if (generation !== this.generation) return;
@@ -131,9 +107,20 @@ export class RealtimeTownSquare {
     if (this.subscribed) void this.channel?.track(this.currentState);
   }
 
-  sendMovement(profile: PlayerIdentity, x: number, y: number): void {
+  sendMovement(profile: PlayerIdentity, x: number, y: number, rawDirectionX: number, rawDirectionY: number): void {
     if (!this.channel || !this.subscribed) return;
-    this.currentState = this.makeState(profile, x, y);
+    const length = Math.hypot(rawDirectionX, rawDirectionY);
+    const directionX = length > 0.001 ? rawDirectionX / length : 0;
+    const directionY = length > 0.001 ? rawDirectionY / length : 0;
+    const now = Date.now();
+    const changed = Math.abs(directionX - this.lastDirectionX) > 0.025 || Math.abs(directionY - this.lastDirectionY) > 0.025;
+    const moving = directionX !== 0 || directionY !== 0;
+    if (!changed && now - this.lastMovementSentAt < (moving ? 1_000 : 15_000)) return;
+    this.lastDirectionX = directionX;
+    this.lastDirectionY = directionY;
+    this.lastMovementSentAt = now;
+    this.movementSequence = (this.movementSequence + 1) & 0xffff;
+    this.currentState = this.makeState(profile, x, y, directionX * 220, directionY * 220);
     void this.channel.send({
       type: "broadcast",
       event: "player_move",
@@ -160,26 +147,9 @@ export class RealtimeTownSquare {
     return message;
   }
 
-  sendImage(profile: PlayerIdentity, imageDataUrl: string, x: number, y: number): BlockChatMessage | null {
-    if (!this.channel || !this.subscribed) return null;
-    this.currentState = this.makeState(profile, x, y);
-    const message: BlockChatMessage = {
-      id: crypto.randomUUID(),
-      player: this.currentState,
-      kind: "image",
-      // Keep text present so an older client degrades to an empty speech card
-      // instead of throwing while a new deployment is rolling out.
-      text: "",
-      imageDataUrl,
-      sentAt: Date.now(),
-      durationMs: 12_000,
-    };
-    void this.channel.send({
-      type: "broadcast",
-      event: "chat_message",
-      payload: message,
-    });
-    return message;
+  async sendImage(_profile: PlayerIdentity, _imageDataUrl: string, _x: number, _y: number): Promise<BlockChatMessage | null> {
+    this.callbacks.onNotice("Temporary pictures need the Cloudflare world server.");
+    return null;
   }
 
   async disconnect(): Promise<void> {
@@ -187,7 +157,7 @@ export class RealtimeTownSquare {
     await this.removeCurrentChannel();
   }
 
-  private makeState(profile: PlayerIdentity, x: number, y: number): OnlinePlayer {
+  private makeState(profile: PlayerIdentity, x: number, y: number, velocityX = 0, velocityY = 0): OnlinePlayer {
     return {
       id: this.connectionId,
       authUserId: this.authUserId,
@@ -195,6 +165,11 @@ export class RealtimeTownSquare {
       color: profile.color,
       x,
       y,
+      slot: 0,
+      velocityX,
+      velocityY,
+      sequence: this.movementSequence,
+      zone: 1,
       updatedAt: Date.now(),
     };
   }
@@ -204,7 +179,7 @@ export class RealtimeTownSquare {
     const latestByUser = new Map<string, OnlinePlayer>();
     for (const [presenceKey, presences] of Object.entries(state)) {
       for (const presence of presences) {
-        const player = { ...presence, id: presenceKey };
+        const player = this.normalizePlayer({ ...presence, id: presenceKey });
         const existing = latestByUser.get(presenceKey);
         if (!existing || player.updatedAt >= existing.updatedAt) latestByUser.set(presenceKey, player);
       }
@@ -221,6 +196,28 @@ export class RealtimeTownSquare {
       event: "player_hello",
       payload: { player: this.currentState, replyRequested } satisfies HelloPayload,
     });
+  }
+
+  private isNearby(player: OnlinePlayer): boolean {
+    if (!this.currentState) return false;
+    return Math.hypot(player.x - this.currentState.x, player.y - this.currentState.y) <= WORLD.chatRadius;
+  }
+
+  private normalizePlayer(player: Partial<OnlinePlayer>): OnlinePlayer {
+    return {
+      id: typeof player.id === "string" ? player.id : crypto.randomUUID(),
+      authUserId: typeof player.authUserId === "string" ? player.authUserId : "",
+      username: typeof player.username === "string" ? player.username : "New Neighbor",
+      color: typeof player.color === "string" ? player.color : "#ff6b6b",
+      slot: typeof player.slot === "number" ? player.slot : 0,
+      x: typeof player.x === "number" ? player.x : WORLD.width / 2,
+      y: typeof player.y === "number" ? player.y : WORLD.height / 2,
+      velocityX: typeof player.velocityX === "number" ? player.velocityX : 0,
+      velocityY: typeof player.velocityY === "number" ? player.velocityY : 0,
+      sequence: typeof player.sequence === "number" ? player.sequence : 0,
+      zone: player.zone === 2 ? 2 : 1,
+      updatedAt: typeof player.updatedAt === "number" ? player.updatedAt : Date.now(),
+    };
   }
 
   private async removeCurrentChannel(): Promise<void> {

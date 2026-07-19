@@ -1,14 +1,24 @@
 import Phaser from "phaser";
 import { PALETTE, WORLD } from "../config";
 import { loadProfile, saveProfile } from "../systems/LocalProfile";
-import { RealtimeTownSquare, type BlockChatMessage, type OnlinePlayer } from "../systems/RealtimeTownSquare";
+import { LOCAL_TOWN_NEIGHBORS, type LocalTownNeighbor } from "../systems/LocalTownNeighbors";
+import { createTownSquareTransport } from "../systems/createTownSquareTransport";
+import type { BlockChatMessage, OnlinePlayer, TownSquareTransport } from "../systems/TownSquareTransport";
 import { WorldRouter } from "../systems/WorldRouter";
 import type { PlayerIdentity } from "../types/world";
 
-type Remote = { body: Phaser.GameObjects.Container; target: Phaser.Math.Vector2; updatedAt: number };
+type Remote = {
+  body: Phaser.GameObjects.Container;
+  target: Phaser.Math.Vector2;
+  velocity: Phaser.Math.Vector2;
+  updatedAt: number;
+  zone: 1 | 2;
+};
+
+type LocalNeighborSprite = LocalTownNeighbor & { body: Phaser.GameObjects.Container };
 
 const MAX_IMAGE_INPUT_BYTES = 15 * 1024 * 1024;
-const MAX_IMAGE_DATA_URL_CHARS = 180_000;
+const MAX_IMAGE_DATA_URL_CHARS = 140_000;
 const SUPPORTED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 export class TownSquareScene extends Phaser.Scene {
@@ -20,9 +30,9 @@ export class TownSquareScene extends Phaser.Scene {
   private joystick = new Phaser.Math.Vector2();
   private moveTarget: Phaser.Math.Vector2 | null = null;
   private remotes = new Map<string, Remote>();
-  private network: RealtimeTownSquare | null = null;
+  private localNeighbors: LocalNeighborSprite[] = [];
+  private network: TownSquareTransport | null = null;
   private statusElement: HTMLElement | null = null;
-  private lastBroadcastAt = 0;
   private onlineCount = 1;
   private connectionStatus: "connecting" | "online" | "offline" | "error" = "connecting";
   private reconnecting = false;
@@ -35,6 +45,7 @@ export class TownSquareScene extends Phaser.Scene {
   private photoPrepareGeneration = 0;
   private profilePanel: HTMLElement | null = null;
   private composingChat = false;
+  private localCorrection: Phaser.Math.Vector2 | null = null;
   private router = new WorldRouter();
 
   constructor() { super("TownSquare"); }
@@ -43,6 +54,7 @@ export class TownSquareScene extends Phaser.Scene {
     this.cameras.main.setBounds(0, 0, WORLD.width, WORLD.height);
     this.physics.world.setBounds(0, 0, WORLD.width, WORLD.height);
     this.drawWorld();
+    this.createLocalNeighbors();
     const spawnAngle = Math.random() * Math.PI * 2;
     const spawnRadius = Phaser.Math.Between(175, 285);
     this.player = this.makePlayer(this.profile, 1100 + Math.cos(spawnAngle) * spawnRadius, 750 + Math.sin(spawnAngle) * spawnRadius, true);
@@ -71,6 +83,8 @@ export class TownSquareScene extends Phaser.Scene {
       void this.network?.disconnect();
       for (const remote of this.remotes.values()) remote.body.destroy(true);
       this.remotes.clear();
+      for (const neighbor of this.localNeighbors) neighbor.body.destroy(true);
+      this.localNeighbors = [];
     });
   }
 
@@ -101,15 +115,30 @@ export class TownSquareScene extends Phaser.Scene {
     body.setVelocity(direction.x * speed, direction.y * speed);
     this.player.setDepth(this.player.y);
 
-    if (time - this.lastBroadcastAt >= 80 && body.speed > 0) {
-      this.network?.sendMovement(this.profile, this.player.x, this.player.y);
-      this.lastBroadcastAt = time;
+    this.network?.sendMovement(this.profile, this.player.x, this.player.y, direction.x, direction.y);
+    if (this.localCorrection) {
+      const correctionBlend = 1 - Math.exp(-delta * 0.009);
+      this.player.x += this.localCorrection.x * correctionBlend;
+      this.player.y += this.localCorrection.y * correctionBlend;
+      this.localCorrection.scale(1 - correctionBlend);
+      if (this.localCorrection.length() < 1.5) {
+        this.localCorrection = null;
+      }
     }
     const blend = 1 - Math.exp(-delta * 0.012);
     for (const remote of this.remotes.values()) {
-      remote.body.x = Phaser.Math.Linear(remote.body.x, remote.target.x, blend);
-      remote.body.y = Phaser.Math.Linear(remote.body.y, remote.target.y, blend);
+      const predictionSeconds = Phaser.Math.Clamp((Date.now() - remote.updatedAt) / 1000, 0, 4);
+      const predictedX = Phaser.Math.Clamp(remote.target.x + remote.velocity.x * predictionSeconds, 21, WORLD.width - 21);
+      const predictedY = Phaser.Math.Clamp(remote.target.y + remote.velocity.y * predictionSeconds, 21, WORLD.height - 21);
+      remote.body.x = Phaser.Math.Linear(remote.body.x, predictedX, blend);
+      remote.body.y = Phaser.Math.Linear(remote.body.y, predictedY, blend);
       remote.body.setDepth(remote.body.y);
+    }
+    for (const neighbor of this.localNeighbors) {
+      const angle = neighbor.phase + time * neighbor.speed;
+      neighbor.body.x = 1100 + Math.cos(angle) * neighbor.orbitRadius;
+      neighbor.body.y = 750 + Math.sin(angle) * neighbor.orbitRadius * 0.68;
+      neighbor.body.setDepth(neighbor.body.y);
     }
     this.updateChatComposerPosition();
   }
@@ -132,7 +161,20 @@ export class TownSquareScene extends Phaser.Scene {
     this.add.text(1100, 100, "NASHVILLE TOWN SQUARE", { fontFamily: "system-ui", fontSize: "23px", color: "#f7f4ec", fontStyle: "bold" }).setOrigin(.5).setAlpha(.85);
   }
 
-  private makePlayer(identity: PlayerIdentity, x: number, y: number, local = false): Phaser.GameObjects.Container {
+  private createLocalNeighbors(): void {
+    this.localNeighbors = LOCAL_TOWN_NEIGHBORS.map(neighbor => ({
+      ...neighbor,
+      body: this.makePlayer(
+        neighbor.identity,
+        1100 + Math.cos(neighbor.phase) * neighbor.orbitRadius,
+        750 + Math.sin(neighbor.phase) * neighbor.orbitRadius * 0.68,
+        false,
+        true,
+      ),
+    }));
+  }
+
+  private makePlayer(identity: PlayerIdentity, x: number, y: number, local = false, localGuide = false): Phaser.GameObjects.Container {
     const square = this.add.rectangle(0, 0, 42, 42, Phaser.Display.Color.HexStringToColor(identity.color).color, 1).setStrokeStyle(3, 0x0b1020, 1).setInteractive({ useHandCursor: true });
     const label = this.add.text(0, -39, identity.username, { fontFamily: "system-ui", fontSize: "13px", color: "#ffffff", stroke: "#17223a", strokeThickness: 4 }).setOrigin(.5);
     const block = this.add.container(x, y, [square, label]);
@@ -140,6 +182,7 @@ export class TownSquareScene extends Phaser.Scene {
     block.setDepth(y);
     block.setData("baseColor", identity.color);
     block.setData("messageActive", false);
+    block.setData("localGuide", localGuide);
     if (local) {
       square.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
         event.stopPropagation();
@@ -151,7 +194,11 @@ export class TownSquareScene extends Phaser.Scene {
         event.stopPropagation();
         this.moveTarget = null;
         const currentName = (block.getAt(1) as Phaser.GameObjects.Text).text;
-        this.showBubble(block.x, block.y - 50, `${currentName} is online. Nearby chat comes next.`);
+        this.showBubble(
+          block.x,
+          block.y - 50,
+          block.getData("localGuide") ? `${currentName} is a local town guide.` : `${currentName} is online nearby.`,
+        );
       });
     }
     return block;
@@ -167,15 +214,27 @@ export class TownSquareScene extends Phaser.Scene {
     this.profilePanel = panel;
     const nameInput = panel.querySelector<HTMLInputElement>("input")!;
     const keyboard = this.input.keyboard!;
-    nameInput.addEventListener("focus", () => {
+    const isTextField = (target: EventTarget | null): boolean => target instanceof HTMLTextAreaElement
+      || (target instanceof HTMLInputElement && !["button", "checkbox", "color", "file", "radio", "range", "submit"].includes(target.type));
+    const pauseForText = () => {
+      keyboard.resetKeys();
       keyboard.disableGlobalCapture();
       keyboard.enabled = false;
       this.moveTarget = null;
       (this.player.body as Phaser.Physics.Arcade.Body).setVelocity(0);
-    });
-    nameInput.addEventListener("blur", () => {
+    };
+    const resumeAfterText = () => {
+      keyboard.resetKeys();
       keyboard.enabled = true;
       keyboard.enableGlobalCapture();
+    };
+    hud.addEventListener("focusin", event => {
+      if (isTextField(event.target)) pauseForText();
+    });
+    hud.addEventListener("focusout", () => {
+      window.setTimeout(() => {
+        if (!isTextField(document.activeElement)) resumeAfterText();
+      }, 0);
     });
     hud.querySelector<HTMLButtonElement>(".edit")!.onclick = () => {
       this.closeChatComposer(true);
@@ -199,12 +258,6 @@ export class TownSquareScene extends Phaser.Scene {
     };
     this.chatForm = hud.querySelector<HTMLFormElement>(".chat-composer")!;
     this.chatInput = this.chatForm.querySelector<HTMLInputElement>("input")!;
-    this.chatInput.addEventListener("focus", () => {
-      keyboard.disableGlobalCapture();
-      keyboard.enabled = false;
-      (this.player.body as Phaser.Physics.Arcade.Body).setVelocity(0);
-      this.moveTarget = null;
-    });
     this.chatInput.addEventListener("keydown", event => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -262,12 +315,14 @@ export class TownSquareScene extends Phaser.Scene {
   }
 
   private async startMultiplayer(): Promise<void> {
-    this.network = new RealtimeTownSquare({
+    this.network = createTownSquareTransport({
       onPlayers: players => this.syncOnlinePlayers(players),
       onMovement: player => this.upsertRemote(player),
+      onCorrection: (x, y, velocityX, velocityY, sequence) => this.applyAuthoritativeCorrection(x, y, velocityX, velocityY, sequence),
       onChat: message => this.receiveChatMessage(message),
       onCount: count => this.setOnlineCount(count),
       onStatus: status => this.setConnectionStatus(status),
+      onNotice: message => this.showBubble(this.player.x, this.player.y - 55, message),
     });
 
     document.addEventListener("visibilitychange", this.handleVisibilityChange);
@@ -301,12 +356,14 @@ export class TownSquareScene extends Phaser.Scene {
     }
     if (this.wasHidden) {
       this.wasHidden = false;
-      void this.reconnectMultiplayer();
+      void this.reconnectMultiplayer(this.network?.mode === "supabase-fallback");
     }
   };
 
   private readonly handleNetworkResume = (): void => {
-    if (document.visibilityState === "visible" && navigator.onLine) void this.reconnectMultiplayer();
+    if (document.visibilityState === "visible" && navigator.onLine) {
+      void this.reconnectMultiplayer(this.network?.mode === "supabase-fallback");
+    }
   };
 
   private scheduleReconnect(): void {
@@ -334,6 +391,9 @@ export class TownSquareScene extends Phaser.Scene {
       if (player.updatedAt < existing.updatedAt) return;
       existing.updatedAt = player.updatedAt;
       existing.target.set(player.x, player.y);
+      existing.velocity.set(player.velocityX, player.velocityY);
+      existing.zone = player.zone;
+      existing.body.setVisible(player.zone === 1);
       existing.body.setData("baseColor", player.color);
       if (!existing.body.getData("messageActive")) {
         (existing.body.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(Phaser.Display.Color.HexStringToColor(player.color).color);
@@ -346,8 +406,11 @@ export class TownSquareScene extends Phaser.Scene {
     this.remotes.set(player.id, {
       body,
       target: new Phaser.Math.Vector2(player.x, player.y),
+      velocity: new Phaser.Math.Vector2(player.velocityX, player.velocityY),
       updatedAt: player.updatedAt,
+      zone: player.zone,
     });
+    body.setVisible(player.zone === 1);
   }
 
   private openChatComposer(): void {
@@ -375,6 +438,7 @@ export class TownSquareScene extends Phaser.Scene {
     this.chatInput?.blur();
     const keyboard = this.input.keyboard;
     if (keyboard) {
+      keyboard.resetKeys();
       keyboard.enabled = true;
       keyboard.enableGlobalCapture();
     }
@@ -414,7 +478,7 @@ export class TownSquareScene extends Phaser.Scene {
     try {
       const imageDataUrl = await this.prepareTemporaryImage(file);
       if (generation !== this.photoPrepareGeneration || !this.composingChat) return;
-      const message = this.network?.sendImage(this.profile, imageDataUrl, this.player.x, this.player.y);
+      const message = await this.network?.sendImage(this.profile, imageDataUrl, this.player.x, this.player.y);
       const messageId = message?.id ?? crypto.randomUUID();
       this.closeChatComposer(false);
       this.showBlockPhoto(this.player, imageDataUrl, messageId, message?.durationMs ?? 12_000);
@@ -587,7 +651,7 @@ export class TownSquareScene extends Phaser.Scene {
     }
 
     if (!source.naturalWidth || !source.naturalHeight) throw new Error("The picture has no dimensions.");
-    let maxDimension = 720;
+    let maxDimension = 512;
     const qualities = [0.78, 0.66, 0.54, 0.42];
 
     for (let sizeAttempt = 0; sizeAttempt < 5; sizeAttempt += 1) {
@@ -614,9 +678,32 @@ export class TownSquareScene extends Phaser.Scene {
   }
 
   private isSafeTemporaryImage(value: unknown): value is string {
-    return typeof value === "string"
-      && value.length <= MAX_IMAGE_DATA_URL_CHARS
-      && value.startsWith("data:image/jpeg;base64,");
+    if (typeof value !== "string") return false;
+    if (value.length <= MAX_IMAGE_DATA_URL_CHARS && value.startsWith("data:image/jpeg;base64,")) return true;
+    if (value.length > 4096) return false;
+    try {
+      const imageUrl = new URL(value);
+      const allowedOrigins = [
+        import.meta.env.VITE_WORLD_SOCKET_URL as string | undefined,
+        import.meta.env.VITE_SUPABASE_URL as string | undefined,
+      ].filter((candidate): candidate is string => Boolean(candidate?.trim()))
+        .map(candidate => new URL(candidate.trim()).origin);
+      const secureOrLocal = imageUrl.protocol === "https:"
+        || (imageUrl.protocol === "http:" && ["localhost", "127.0.0.1"].includes(imageUrl.hostname));
+      return secureOrLocal && allowedOrigins.includes(imageUrl.origin);
+    } catch {
+      return false;
+    }
+  }
+
+  private applyAuthoritativeCorrection(x: number, y: number, _velocityX: number, _velocityY: number, _sequence: number): void {
+    const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, x, y);
+    if (distance > 160) {
+      this.player.setPosition(x, y);
+      this.localCorrection = null;
+    } else if (distance > 4) {
+      this.localCorrection = new Phaser.Math.Vector2(x - this.player.x, y - this.player.y);
+    }
   }
 
   private updateChatComposerPosition(): void {

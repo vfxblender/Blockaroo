@@ -31,6 +31,7 @@ jobs:
         env:
           VITE_SUPABASE_URL: https://gjgeairzynwblfrpojyc.supabase.co
           VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_rKxx_3UTm8rn_M4OEMjMNQ_r8Wxgxss
+          VITE_WORLD_SOCKET_URL: ${{ vars.VITE_WORLD_SOCKET_URL }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
