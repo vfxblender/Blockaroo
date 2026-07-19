@@ -31,7 +31,9 @@ export class TownSquareScene extends Phaser.Scene {
     this.cameras.main.setZoom(Phaser.Math.Clamp(Math.min(this.scale.width / 720, this.scale.height / 500), 0.72, 1.15));
 
     this.cursors = this.input.keyboard!.createCursorKeys();
-    this.keys = this.input.keyboard!.addKeys("W,A,S,D") as Record<string, Phaser.Input.Keyboard.Key>;
+    // Keep WASD available to normal browser text fields. Movement still reads
+    // the key state, but Phaser must not call preventDefault for these letters.
+    this.keys = this.input.keyboard!.addKeys("W,A,S,D", false) as Record<string, Phaser.Input.Keyboard.Key>;
     this.createDemoNeighbors();
     this.createHud();
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
@@ -126,11 +128,15 @@ export class TownSquareScene extends Phaser.Scene {
     const nameInput = panel.querySelector<HTMLInputElement>("input")!;
     const keyboard = this.input.keyboard!;
     nameInput.addEventListener("focus", () => {
+      keyboard.disableGlobalCapture();
       keyboard.enabled = false;
       this.moveTarget = null;
       (this.player.body as Phaser.Physics.Arcade.Body).setVelocity(0);
     });
-    nameInput.addEventListener("blur", () => { keyboard.enabled = true; });
+    nameInput.addEventListener("blur", () => {
+      keyboard.enabled = true;
+      keyboard.enableGlobalCapture();
+    });
     hud.querySelector<HTMLButtonElement>(".edit")!.onclick = () => {
       panel.hidden = !panel.hidden;
       if (panel.hidden) nameInput.blur();
