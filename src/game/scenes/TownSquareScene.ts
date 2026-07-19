@@ -33,22 +33,18 @@ export class TownSquareScene extends Phaser.Scene {
     this.keys = this.input.keyboard!.addKeys("W,A,S,D") as Record<string, Phaser.Input.Keyboard.Key>;
     this.createDemoNeighbors();
     this.createHud();
-    this.input.on("gameobjectdown", (_pointer: Phaser.Input.Pointer, object: Phaser.GameObjects.GameObject) => {
-      const neighbor = object.getData("neighbor") as string | undefined;
-      if (neighbor) {
-        const square = object as Phaser.GameObjects.Rectangle;
-        this.showBubble(square.x, square.y - 44, `Say hi to ${neighbor} — multiplayer comes next.`);
-      }
-    });
   }
 
   update(_time: number, delta: number): void {
     const speed = 220;
     let x = 0; let y = 0;
-    if (this.cursors.left.isDown || this.keys.A.isDown) x -= 1;
-    if (this.cursors.right.isDown || this.keys.D.isDown) x += 1;
-    if (this.cursors.up.isDown || this.keys.W.isDown) y -= 1;
-    if (this.cursors.down.isDown || this.keys.S.isDown) y += 1;
+    const isEditingText = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
+    if (!isEditingText) {
+      if (this.cursors.left.isDown || this.keys.A.isDown) x -= 1;
+      if (this.cursors.right.isDown || this.keys.D.isDown) x += 1;
+      if (this.cursors.up.isDown || this.keys.W.isDown) y -= 1;
+      if (this.cursors.down.isDown || this.keys.S.isDown) y += 1;
+    }
     x += this.joystick.x; y += this.joystick.y;
     const direction = new Phaser.Math.Vector2(x, y).normalize();
     const body = this.player.body as Phaser.Physics.Arcade.Body;
@@ -76,12 +72,14 @@ export class TownSquareScene extends Phaser.Scene {
   }
 
   private makePlayer(identity: PlayerIdentity, x: number, y: number, local = false): Phaser.GameObjects.Container {
-    const square = this.add.rectangle(0, 0, 42, 42, Phaser.Display.Color.HexStringToColor(identity.color).color, 1).setStrokeStyle(3, 0xffffff, local ? 1 : .65).setInteractive({ useHandCursor: !local });
-    square.setData("neighbor", local ? undefined : identity.username);
+    const square = this.add.rectangle(0, 0, 42, 42, Phaser.Display.Color.HexStringToColor(identity.color).color, 1).setStrokeStyle(3, 0x0b1020, 1).setInteractive({ useHandCursor: !local });
     const label = this.add.text(0, -39, identity.username, { fontFamily: "system-ui", fontSize: "13px", color: "#ffffff", stroke: "#17223a", strokeThickness: 4 }).setOrigin(.5);
     const block = this.add.container(x, y, [square, label]);
     block.setSize(42, 42);
     block.setDepth(y);
+    if (!local) {
+      square.on("pointerdown", () => this.showBubble(block.x, block.y - 50, `Say hi to ${identity.username} — live chat comes with multiplayer.`));
+    }
     return block;
   }
 
@@ -120,8 +118,11 @@ export class TownSquareScene extends Phaser.Scene {
     const move = (event: PointerEvent) => { const box = stick.getBoundingClientRect(); this.joystick.set((event.clientX - (box.left + box.width / 2)) / 42, (event.clientY - (box.top + box.height / 2)) / 42).limit(1); };
     stick.addEventListener("pointerdown", event => { stick.setPointerCapture(event.pointerId); move(event); });
     stick.addEventListener("pointermove", event => { if (stick.hasPointerCapture(event.pointerId)) move(event); });
-    stick.addEventListener("pointerup", () => this.joystick.set(0));
-    stick.addEventListener("pointercancel", () => this.joystick.set(0));
+    const stopJoystick = () => this.joystick.set(0);
+    stick.addEventListener("pointerup", stopJoystick);
+    stick.addEventListener("pointercancel", stopJoystick);
+    window.addEventListener("pointerup", stopJoystick);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => window.removeEventListener("pointerup", stopJoystick));
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => hud.remove());
   }
 
