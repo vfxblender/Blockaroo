@@ -23,6 +23,10 @@ button, input { font: inherit; }
 .swatch { width: 28px; height: 28px; border-radius: 9px; border: 3px solid transparent; cursor: pointer; }
 .swatch.selected { border-color: white; transform: scale(1.12); }
 .save { margin-top: 15px; width: 100%; padding: 11px; border: 0; border-radius: 10px; background: #06d6a0; color: #072d29; font-weight: 900; cursor: pointer; }
+.chat-composer { pointer-events: auto; position: fixed; z-index: 5; width: min(270px, calc(100vw - 28px)); transform: translate(-50%, -100%); }
+.chat-composer[hidden] { display: none; }
+.chat-composer input { width: 100%; padding: 11px 13px; border: 3px solid #0b1020; border-radius: 12px; outline: none; background: #fff; color: #0b1020; box-shadow: 0 8px 24px rgba(0,0,0,.28); font-weight: 700; }
+.chat-composer input:focus { box-shadow: 0 0 0 3px #ffd166, 0 8px 24px rgba(0,0,0,.28); }
 .joystick { pointer-events: auto; position: fixed; left: 20px; bottom: max(24px, env(safe-area-inset-bottom)); width: 122px; height: 122px; border-radius: 50%; border: 2px solid rgba(255,255,255,.32); background: rgba(16,24,43,.58); touch-action: none; user-select: none; -webkit-user-select: none; display: grid; place-items: center; }
 .joystick-knob { width: 48px; height: 48px; border-radius: 50%; background: #f7f4ec; border: 3px solid #0b1020; box-shadow: 0 4px 12px rgba(0,0,0,.28); transition: transform 60ms linear; pointer-events: none; }
 @media (hover:hover) and (pointer:fine) { .joystick { opacity: .68; } .joystick:hover { opacity: 1; } }
