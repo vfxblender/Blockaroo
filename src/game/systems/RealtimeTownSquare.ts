@@ -9,11 +9,20 @@ export interface OnlinePlayer extends PlayerIdentity {
   updatedAt: number;
 }
 
+export interface BlockChatMessage {
+  id: string;
+  player: OnlinePlayer;
+  text: string;
+  sentAt: number;
+  durationMs: number;
+}
+
 type ConnectionStatus = "connecting" | "online" | "offline" | "error";
 
 interface RealtimeCallbacks {
   onPlayers(players: OnlinePlayer[]): void;
   onMovement(player: OnlinePlayer): void;
+  onChat(message: BlockChatMessage): void;
   onCount(count: number): void;
   onStatus(status: ConnectionStatus): void;
 }
@@ -86,6 +95,11 @@ export class RealtimeTownSquare {
         this.callbacks.onMovement(hello.player);
         if (hello.replyRequested) this.sendHello(false);
       })
+      .on("broadcast", { event: "chat_message" }, ({ payload }) => {
+        if (generation !== this.generation) return;
+        const message = payload as BlockChatMessage;
+        if (message.player.id !== connectionId) this.callbacks.onChat(message);
+      })
       .subscribe(async status => {
         if (generation !== this.generation) return;
         if (status === "SUBSCRIBED") {
@@ -123,6 +137,24 @@ export class RealtimeTownSquare {
       event: "player_move",
       payload: this.currentState,
     });
+  }
+
+  sendChat(profile: PlayerIdentity, text: string, x: number, y: number): BlockChatMessage | null {
+    if (!this.channel || !this.subscribed) return null;
+    this.currentState = this.makeState(profile, x, y);
+    const message: BlockChatMessage = {
+      id: crypto.randomUUID(),
+      player: this.currentState,
+      text: text.slice(0, 120),
+      sentAt: Date.now(),
+      durationMs: 12_000,
+    };
+    void this.channel.send({
+      type: "broadcast",
+      event: "chat_message",
+      payload: message,
+    });
+    return message;
   }
 
   async disconnect(): Promise<void> {
