@@ -21,6 +21,10 @@ export class TownSquareScene extends Phaser.Scene {
   private lastBroadcastAt = 0;
   private lastPresenceAt = 0;
   private onlineCount = 1;
+  private connectionStatus: "connecting" | "online" | "offline" | "error" = "connecting";
+  private reconnecting = false;
+  private reconnectTimer: number | null = null;
+  private wasHidden = document.visibilityState === "hidden";
   private router = new WorldRouter();
 
   constructor() { super("TownSquare"); }
@@ -48,6 +52,11 @@ export class TownSquareScene extends Phaser.Scene {
       this.moveTarget = new Phaser.Math.Vector2(pointer.worldX, pointer.worldY);
     });
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      document.removeEventListener("visibilitychange", this.handleVisibilityChange);
+      window.removeEventListener("focus", this.handleNetworkResume);
+      window.removeEventListener("online", this.handleNetworkResume);
+      window.removeEventListener("pageshow", this.handleNetworkResume);
+      if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
       void this.network?.disconnect();
       for (const remote of this.remotes.values()) remote.body.destroy(true);
       this.remotes.clear();
@@ -212,13 +221,51 @@ export class TownSquareScene extends Phaser.Scene {
       onStatus: status => this.setConnectionStatus(status),
     });
 
+    document.addEventListener("visibilitychange", this.handleVisibilityChange);
+    window.addEventListener("focus", this.handleNetworkResume);
+    window.addEventListener("online", this.handleNetworkResume);
+    window.addEventListener("pageshow", this.handleNetworkResume);
+
+    await this.reconnectMultiplayer(true);
+  }
+
+  private async reconnectMultiplayer(force = false): Promise<void> {
+    if (!this.network || this.reconnecting || document.visibilityState === "hidden" || !navigator.onLine) return;
+    if (!force && this.connectionStatus === "online") return;
+
+    this.reconnecting = true;
     try {
       const connectionId = await this.network.connect(this.profile, this.player.x, this.player.y);
       this.profile = { ...this.profile, id: connectionId };
     } catch (error) {
       console.error("Blockaroo multiplayer connection failed", error);
       this.setConnectionStatus("error");
+    } finally {
+      this.reconnecting = false;
     }
+  }
+
+  private readonly handleVisibilityChange = (): void => {
+    if (document.visibilityState === "hidden") {
+      this.wasHidden = true;
+      return;
+    }
+    if (this.wasHidden) {
+      this.wasHidden = false;
+      void this.reconnectMultiplayer(true);
+    }
+  };
+
+  private readonly handleNetworkResume = (): void => {
+    if (document.visibilityState === "visible" && navigator.onLine) void this.reconnectMultiplayer(true);
+  };
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer !== null || document.visibilityState === "hidden" || !navigator.onLine) return;
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.reconnectMultiplayer();
+    }, 1200);
   }
 
   private syncOnlinePlayers(players: OnlinePlayer[]): void {
@@ -249,9 +296,11 @@ export class TownSquareScene extends Phaser.Scene {
   }
 
   private setConnectionStatus(status: "connecting" | "online" | "offline" | "error"): void {
+    this.connectionStatus = status;
     if (!this.statusElement) return;
     this.statusElement.className = `connection is-${status}`;
     this.statusElement.textContent = status === "online" ? `Live · ${this.onlineCount} online` : status === "connecting" ? "Connecting…" : status === "offline" ? "Offline" : "Connection error";
+    if (status === "offline" || status === "error") this.scheduleReconnect();
   }
 
   private setOnlineCount(count: number): void {
