@@ -1,1 +1,37 @@
-IyBCbG9ja2Fyb28KCkEgdGlueSBkaWdpdGFsIG5laWdoYm9yaG9vZDogd2FsayBhcm91bmQgYSBzaGFyZWQgVG93biBTcXVhcmUsIG1lZXQgY29sb3JmdWwgYmxvY2tzLCBhbmQgZXZlbnR1YWxseSB0cmF2ZWwgYmV0d2VlbiBwcml2YXRlIGhvbWVzLCBuZWlnaGJvcmhvb2Qgb3ZlcndvcmxkcywgY2l0aWVzLCBhbmQgY29tbXVuaXR5IHNwYWNlcy4KCiMjIFByb3RvdHlwZSBzdGF0dXMKClRoaXMgZmlyc3QgcGxheWFibGUgYnVpbGQgaW50ZW50aW9uYWxseSBjb250YWlucyBvbmx5IHRoZSBjb3JlIGludGVyYWN0aW9uOgoKLSBhIG1vYmlsZS1mcmllbmRseSBUb3duIFNxdWFyZQotIGtleWJvYXJkIGFuZCB2aXJ0dWFsLWpveXN0aWNrIG1vdmVtZW50Ci0gYSBwZXJzaXN0ZW50IGxvY2FsIGRpc3BsYXkgbmFtZSBhbmQgYmxvY2sgY29sb3IKLSB0YXBwYWJsZSBkZW1vIG5laWdoYm9ycwoKVGhlIGRlbW8gbmVpZ2hib3JzIGFyZSBsb2NhbCBwbGFjZWhvbGRlcnMuIFJlYWwgYWNjb3VudHMsIHByZXNlbmNlLCBjaGF0LCBob3VzZXMsIG5laWdoYm9ycywgQmxvY2tEcm9wcywgYW5kIHVwbG9hZHMgYmVsb25nIHRvIHRoZSBuZXh0IG1pbGVzdG9uZXMuCgojIyBBcmNoaXRlY3R1cmUgdGhhdCB3aWxsIHNjYWxlCgpFdmVyeSBwbGF5ZXIgc3RhdGUgaXMgc2NvcGVkIHRvIGEgYFdvcmxkTG9jYXRpb25gOgoKYGBgdHMKeyBjaXR5SWQ6ICJuYXNodmlsbGUiLCBzcGFjZUlkOiAidG93bi1zcXVhcmUiLCBraW5kOiAidG93bi1zcXVhcmUiIH0KYGBgCgpGdXR1cmUgbG9jYXRpb25zIHVzZSB0aGUgc2FtZSBjb250cmFjdCwgZm9yIGV4YW1wbGUgYG92ZXJ3b3JsZGAsIGBob3VzZWAsIGFuZCBgdGhlYXRlcmAuIFRoZSBjbGllbnQgcm91dGluZyBzeXN0ZW0gaXMgZGVsaWJlcmF0ZWx5IHNlcGFyYXRlIGZyb20gdGhlIFRvd24gU3F1YXJlIHNjZW5lLiBTdXBhYmFzZSBjYW4gbGF0ZXIgc3RvcmUgdGhlc2UgbG9jYXRpb25zIGFuZCB1c2UgdGhlbSBhcyBSZWFsdGltZSBjaGFubmVsIGtleXMuCgojIyBSdW4gaXQKCmBgYGJhc2gKbnBtIGluc3RhbGwKbnBtIHJ1biBkZXYKYGBgCgpCdWlsZCBhIHByb2R1Y3Rpb24gdmVyc2lvbiB3aXRoIGBucG0gcnVuIGJ1aWxkYC4KCiMjIE5leHQgaW1wbGVtZW50YXRpb24gbWlsZXN0b25lCgpSZXBsYWNlIGRlbW8gbmVpZ2hib3JzIHdpdGggU3VwYWJhc2UgQXV0aCBhbmQgUmVhbHRpbWUgUHJlc2VuY2UgaW4gdGhlIGBuYXNodmlsbGU6dG93bi1zcXVhcmVgIGNoYW5uZWwuIERvIG5vdCBhZGQgaG9tZXMgb3IgZmVlZHMgYmVmb3JlIHRoYXQgc3VjY2VlZHPigJR0aGUgc2hhcmVkLXJvb20gbG9vcCBtdXN0IGJlIGZ1biBmaXJzdC4K
+# Blockaroo
+
+A tiny digital neighborhood: walk around a shared Town Square, meet colorful blocks, and eventually travel between private homes, neighborhood overworlds, cities, and community spaces.
+
+## Prototype status
+
+This first playable build intentionally contains only the core interaction:
+
+- a mobile-friendly Town Square
+- keyboard and virtual-joystick movement
+- a persistent local display name and block color
+- tappable demo neighbors
+
+The demo neighbors are local placeholders. Real accounts, presence, chat, houses, neighbors, BlockDrops, and uploads belong to the next milestones.
+
+## Architecture that will scale
+
+Every player state is scoped to a `WorldLocation`:
+
+```ts
+{ cityId: "nashville", spaceId: "town-square", kind: "town-square" }
+```
+
+Future locations use the same contract, for example `overworld`, `house`, and `theater`. The client routing system is deliberately separate from the Town Square scene. Supabase can later store these locations and use them as Realtime channel keys.
+
+## Run it
+
+```bash
+npm install
+npm run dev
+```
+
+Build a production version with `npm run build`.
+
+## Next implementation milestone
+
+Replace demo neighbors with Supabase Auth and Realtime Presence in the `nashville:town-square` channel. Do not add homes or feeds before that succeeds—the shared-room loop must be fun first.
