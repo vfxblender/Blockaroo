@@ -1,1 +1,14 @@
-aW1wb3J0IFBoYXNlciBmcm9tICJwaGFzZXIiOwppbXBvcnQgIi4vc3R5bGVzLmNzcyI7CmltcG9ydCB7IFRvd25TcXVhcmVTY2VuZSB9IGZyb20gIi4vZ2FtZS9zY2VuZXMvVG93blNxdWFyZVNjZW5lIjsKCm5ldyBQaGFzZXIuR2FtZSh7CiAgdHlwZTogUGhhc2VyLkFVVE8sCiAgcGFyZW50OiAiZ2FtZSIsCiAgYmFja2dyb3VuZENvbG9yOiAiIzEwMTgyYiIsCiAgc2NhbGU6IHsKICAgIG1vZGU6IFBoYXNlci5TY2FsZS5SRVNJWkUsCiAgICBhdXRvQ2VudGVyOiBQaGFzZXIuU2NhbGUuQ0VOVEVSX0JPVEgsCiAgfSwKICBzY2VuZTogW1Rvd25TcXVhcmVTY2VuZV0sCn0pOwo=
+import Phaser from "phaser";
+import "./styles.css";
+import { TownSquareScene } from "./game/scenes/TownSquareScene";
+
+new Phaser.Game({
+  type: Phaser.AUTO,
+  parent: "game",
+  backgroundColor: "#10182b",
+  scale: {
+    mode: Phaser.Scale.RESIZE,
+    autoCenter: Phaser.Scale.CENTER_BOTH,
+  },
+  scene: [TownSquareScene],
+});
