@@ -1,1 +1,19 @@
-ewogICJuYW1lIjogImJsb2NrYXJvbyIsCiAgInByaXZhdGUiOiB0cnVlLAogICJ2ZXJzaW9uIjogIjAuMS4wIiwKICAidHlwZSI6ICJtb2R1bGUiLAogICJzY3JpcHRzIjogewogICAgImRldiI6ICJ2aXRlIiwKICAgICJidWlsZCI6ICJ0c2MgLWIgJiYgdml0ZSBidWlsZCIsCiAgICAicHJldmlldyI6ICJ2aXRlIHByZXZpZXciCiAgfSwKICAiZGVwZW5kZW5jaWVzIjogewogICAgInBoYXNlciI6ICJeMy45MC4wIgogIH0sCiAgImRldkRlcGVuZGVuY2llcyI6IHsKICAgICJAdHlwZXMvbm9kZSI6ICJeMjQuMC4wIiwKICAgICJ0eXBlc2NyaXB0IjogIn41LjguMyIsCiAgICAidml0ZSI6ICJeNy4wLjAiCiAgfQp9Cg==
+{
+  "name": "blockaroo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.0"
+  }
+}
