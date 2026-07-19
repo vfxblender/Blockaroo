@@ -20,6 +20,7 @@ export class TownSquareScene extends Phaser.Scene {
   private statusElement: HTMLElement | null = null;
   private lastBroadcastAt = 0;
   private lastPresenceAt = 0;
+  private onlineCount = 1;
   private router = new WorldRouter();
 
   constructor() { super("TownSquare"); }
@@ -207,6 +208,7 @@ export class TownSquareScene extends Phaser.Scene {
     this.network = new RealtimeTownSquare({
       onPlayers: players => this.syncOnlinePlayers(players),
       onMovement: player => this.upsertRemote(player),
+      onCount: count => this.setOnlineCount(count),
       onStatus: status => this.setConnectionStatus(status),
     });
 
@@ -249,7 +251,14 @@ export class TownSquareScene extends Phaser.Scene {
   private setConnectionStatus(status: "connecting" | "online" | "offline" | "error"): void {
     if (!this.statusElement) return;
     this.statusElement.className = `connection is-${status}`;
-    this.statusElement.textContent = status === "online" ? "Live" : status === "connecting" ? "Connecting…" : status === "offline" ? "Offline" : "Connection error";
+    this.statusElement.textContent = status === "online" ? `Live · ${this.onlineCount} online` : status === "connecting" ? "Connecting…" : status === "offline" ? "Offline" : "Connection error";
+  }
+
+  private setOnlineCount(count: number): void {
+    this.onlineCount = Math.max(1, count);
+    if (this.statusElement?.classList.contains("is-online")) {
+      this.statusElement.textContent = `Live · ${this.onlineCount} online`;
+    }
   }
 
   private showBubble(x: number, y: number, text: string): void {
