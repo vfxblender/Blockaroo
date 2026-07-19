@@ -7,6 +7,10 @@ import type { PlayerIdentity } from "../types/world";
 
 type Remote = { body: Phaser.GameObjects.Container; target: Phaser.Math.Vector2; updatedAt: number };
 
+const MAX_IMAGE_INPUT_BYTES = 15 * 1024 * 1024;
+const MAX_IMAGE_DATA_URL_CHARS = 180_000;
+const SUPPORTED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
 export class TownSquareScene extends Phaser.Scene {
   private profile = loadProfile();
   private player!: Phaser.GameObjects.Container;
@@ -26,6 +30,9 @@ export class TownSquareScene extends Phaser.Scene {
   private wasHidden = document.visibilityState === "hidden";
   private chatForm: HTMLFormElement | null = null;
   private chatInput: HTMLInputElement | null = null;
+  private photoInput: HTMLInputElement | null = null;
+  private photoButton: HTMLButtonElement | null = null;
+  private photoPrepareGeneration = 0;
   private profilePanel: HTMLElement | null = null;
   private composingChat = false;
   private router = new WorldRouter();
@@ -153,7 +160,7 @@ export class TownSquareScene extends Phaser.Scene {
   private createHud(): void {
     const hud = document.createElement("section");
     hud.className = "hud";
-    hud.innerHTML = `<div class="topbar"><div class="brand">BLOCKAROO<small>Nashville · Town Square</small><span class="connection is-connecting">Connecting…</span></div><button class="edit">Your block</button></div><aside class="panel" hidden><h2>Your block</h2><label class="field">Display name<input maxlength="18" value="${this.escape(this.profile.username)}" /></label><label class="field">Block color<div class="swatches">${PALETTE.map(c => `<button class="swatch ${c === this.profile.color ? "selected" : ""}" aria-label="Choose color" style="background:${c}" data-color="${c}"></button>`).join("")}</div></label><button class="save">Enter Town Square</button></aside><form class="chat-composer" hidden><input maxlength="120" autocomplete="off" enterkeyhint="send" aria-label="Write a message" placeholder="Say something…" /></form><div class="hint">Click your block to speak · WASD / arrows · tap ground · joystick</div><div class="joystick" aria-label="Movement joystick"><span class="joystick-knob"></span></div>`;
+    hud.innerHTML = `<div class="topbar"><div class="brand">BLOCKAROO<small>Nashville · Town Square</small><span class="connection is-connecting">Connecting…</span></div><button class="edit">Your block</button></div><aside class="panel" hidden><h2>Your block</h2><label class="field">Display name<input maxlength="18" value="${this.escape(this.profile.username)}" /></label><label class="field">Block color<div class="swatches">${PALETTE.map(c => `<button class="swatch ${c === this.profile.color ? "selected" : ""}" aria-label="Choose color" style="background:${c}" data-color="${c}"></button>`).join("")}</div></label><button class="save">Enter Town Square</button></aside><form class="chat-composer" hidden><input maxlength="120" autocomplete="off" enterkeyhint="send" aria-label="Write a message" placeholder="Say something…" /><button type="button" class="photo-picker" aria-label="Add a temporary picture" title="Add a temporary picture"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7.5h3l1.4-2h5.2l1.4 2h1.5M4 7.5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h11.5M4 7.5h12.5M12.5 18H8a3.5 3.5 0 1 1 5.7-2.7M19 10v8m-4-4h8" /></svg></button><input class="photo-input" type="file" accept="image/jpeg,image/png,image/webp" hidden /></form><div class="hint">Click your block to speak · WASD / arrows · tap ground · joystick</div><div class="joystick" aria-label="Movement joystick"><span class="joystick-knob"></span></div>`;
     document.body.append(hud);
     this.statusElement = hud.querySelector<HTMLElement>(".connection")!;
     const panel = hud.querySelector<HTMLElement>(".panel")!;
@@ -207,6 +214,16 @@ export class TownSquareScene extends Phaser.Scene {
     this.chatForm.addEventListener("submit", event => {
       event.preventDefault();
       this.submitChatMessage();
+    });
+    this.photoInput = this.chatForm.querySelector<HTMLInputElement>(".photo-input")!;
+    this.photoButton = this.chatForm.querySelector<HTMLButtonElement>(".photo-picker")!;
+    this.photoButton.addEventListener("click", event => {
+      event.stopPropagation();
+      this.photoInput?.click();
+    });
+    this.photoInput.addEventListener("change", () => {
+      const file = this.photoInput?.files?.[0];
+      if (file) void this.submitPhotoMessage(file);
     });
     const stick = hud.querySelector<HTMLElement>(".joystick")!;
     const knob = stick.querySelector<HTMLElement>(".joystick-knob")!;
@@ -335,11 +352,14 @@ export class TownSquareScene extends Phaser.Scene {
 
   private openChatComposer(): void {
     if (!this.chatForm || !this.chatInput) return;
+    this.photoPrepareGeneration += 1;
     this.clearBlockMessage(this.player);
     this.composingChat = true;
     if (this.profilePanel) this.profilePanel.hidden = true;
     (this.player.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(0xffffff);
     this.chatInput.value = "";
+    if (this.photoInput) this.photoInput.value = "";
+    this.setPhotoPreparing(false);
     this.chatForm.hidden = false;
     this.updateChatComposerPosition();
     window.setTimeout(() => this.chatInput?.focus(), 0);
@@ -347,8 +367,11 @@ export class TownSquareScene extends Phaser.Scene {
 
   private closeChatComposer(restoreColor: boolean): void {
     if (!this.composingChat) return;
+    this.photoPrepareGeneration += 1;
     this.composingChat = false;
     if (this.chatForm) this.chatForm.hidden = true;
+    if (this.photoInput) this.photoInput.value = "";
+    this.setPhotoPreparing(false);
     this.chatInput?.blur();
     const keyboard = this.input.keyboard;
     if (keyboard) {
@@ -373,18 +396,56 @@ export class TownSquareScene extends Phaser.Scene {
     this.showBlockMessage(this.player, text, message?.durationMs ?? 12_000);
   }
 
+  private async submitPhotoMessage(file: File): Promise<void> {
+    if (!this.composingChat) return;
+    if (!SUPPORTED_IMAGE_TYPES.has(file.type)) {
+      this.showBubble(this.player.x, this.player.y - 55, "Choose a JPEG, PNG, or WebP picture.");
+      if (this.photoInput) this.photoInput.value = "";
+      return;
+    }
+    if (file.size > MAX_IMAGE_INPUT_BYTES) {
+      this.showBubble(this.player.x, this.player.y - 55, "That picture is too large. Choose one under 15 MB.");
+      if (this.photoInput) this.photoInput.value = "";
+      return;
+    }
+
+    const generation = ++this.photoPrepareGeneration;
+    this.setPhotoPreparing(true);
+    try {
+      const imageDataUrl = await this.prepareTemporaryImage(file);
+      if (generation !== this.photoPrepareGeneration || !this.composingChat) return;
+      const message = this.network?.sendImage(this.profile, imageDataUrl, this.player.x, this.player.y);
+      const messageId = message?.id ?? crypto.randomUUID();
+      this.closeChatComposer(false);
+      this.showBlockPhoto(this.player, imageDataUrl, messageId, message?.durationMs ?? 12_000);
+    } catch (error) {
+      console.error("Blockaroo could not prepare the picture", error);
+      if (generation === this.photoPrepareGeneration) {
+        this.showBubble(this.player.x, this.player.y - 55, "That picture could not be prepared. Try another one.");
+        this.setPhotoPreparing(false);
+      }
+    } finally {
+      if (this.photoInput) this.photoInput.value = "";
+    }
+  }
+
   private receiveChatMessage(message: BlockChatMessage): void {
     const remaining = message.durationMs - (Date.now() - message.sentAt);
     if (remaining <= 0) return;
     this.upsertRemote(message.player);
     const remote = this.remotes.get(message.player.id);
-    if (remote) this.showBlockMessage(remote.body, message.text.slice(0, 120), remaining);
+    if (!remote) return;
+    if (message.kind === "image" && this.isSafeTemporaryImage(message.imageDataUrl)) {
+      this.showBlockPhoto(remote.body, message.imageDataUrl, message.id, remaining);
+      return;
+    }
+    if (typeof message.text === "string" && message.text.trim()) {
+      this.showBlockMessage(remote.body, message.text.slice(0, 120), remaining);
+    }
   }
 
   private showBlockMessage(block: Phaser.GameObjects.Container, text: string, durationMs: number): void {
     this.clearBlockMessage(block);
-    const square = block.getAt(0) as Phaser.GameObjects.Rectangle;
-    const label = block.getAt(1) as Phaser.GameObjects.Text;
     const messageText = this.add.text(0, 0, text, {
       fontFamily: "system-ui",
       fontSize: "15px",
@@ -396,19 +457,67 @@ export class TownSquareScene extends Phaser.Scene {
 
     const width = Phaser.Math.Clamp(Math.ceil(messageText.width + 24), 58, 250);
     const height = Phaser.Math.Clamp(Math.ceil(messageText.height + 20), 48, 150);
+    this.activateBlockMessage(block, messageText, width, height, durationMs);
+  }
+
+  private showBlockPhoto(block: Phaser.GameObjects.Container, imageDataUrl: string, messageId: string, durationMs: number): void {
+    this.clearBlockMessage(block);
+    const square = block.getAt(0) as Phaser.GameObjects.Rectangle;
+    const label = block.getAt(1) as Phaser.GameObjects.Text;
+    square.setFillStyle(0xffffff).setDisplaySize(70, 70);
+    label.setY(-50);
+    block.setSize(70, 70);
+    block.setData("messageActive", true);
+    block.setData("messageId", messageId);
+
+    const browserImage = new window.Image();
+    browserImage.onload = () => {
+      if (!block.active || block.getData("messageId") !== messageId) return;
+      const textureKey = `block-photo-${messageId}`;
+      if (this.textures.exists(textureKey)) this.textures.remove(textureKey);
+      this.textures.addImage(textureKey, browserImage);
+      const photo = this.add.image(0, 0, textureKey).setOrigin(.5);
+      block.add(photo);
+
+      const fitScale = Math.min(234 / browserImage.naturalWidth, 190 / browserImage.naturalHeight);
+      const imageWidth = Math.max(1, Math.round(browserImage.naturalWidth * fitScale));
+      const imageHeight = Math.max(1, Math.round(browserImage.naturalHeight * fitScale));
+      photo.setDisplaySize(imageWidth, imageHeight);
+      this.activateBlockMessage(block, photo, Math.max(72, imageWidth + 16), Math.max(72, imageHeight + 16), durationMs, textureKey);
+    };
+    browserImage.onerror = () => {
+      if (block.active && block.getData("messageId") === messageId) {
+        this.showBlockMessage(block, "Picture unavailable", Math.min(durationMs, 2_500));
+      }
+    };
+    browserImage.src = imageDataUrl;
+  }
+
+  private activateBlockMessage(
+    block: Phaser.GameObjects.Container,
+    content: Phaser.GameObjects.Text | Phaser.GameObjects.Image,
+    width: number,
+    height: number,
+    durationMs: number,
+    textureKey?: string,
+  ): void {
+    const square = block.getAt(0) as Phaser.GameObjects.Rectangle;
+    const label = block.getAt(1) as Phaser.GameObjects.Text;
     square.setFillStyle(0xffffff).setDisplaySize(width, height);
     label.setY(-(height / 2) - 15);
     block.setSize(width, height);
     block.setData("messageActive", true);
-    block.setData("messageText", messageText);
+    block.setData("messageContent", content);
+    block.setData("messageTextureKey", textureKey ?? null);
 
-    const timer = this.time.delayedCall(Math.max(500, durationMs - 900), () => {
+    const fadeDuration = Math.min(900, Math.max(300, durationMs * 0.25));
+    const timer = this.time.delayedCall(Math.max(0, durationMs - fadeDuration), () => {
       const baseColor = Phaser.Display.Color.HexStringToColor(block.getData("baseColor") as string);
       const white = Phaser.Display.Color.ValueToColor(0xffffff);
       const fadeTween = this.tweens.addCounter({
         from: 0,
         to: 100,
-        duration: Math.min(900, durationMs),
+        duration: fadeDuration,
         ease: "Sine.easeInOut",
         onUpdate: tween => {
           const progress = (tween.getValue() ?? 0) / 100;
@@ -416,7 +525,7 @@ export class TownSquareScene extends Phaser.Scene {
           square.setFillStyle(Phaser.Display.Color.GetColor(color.r, color.g, color.b));
           square.setDisplaySize(Phaser.Math.Linear(width, 42, progress), Phaser.Math.Linear(height, 42, progress));
           label.setY(Phaser.Math.Linear(-(height / 2) - 15, -39, progress));
-          messageText.setAlpha(1 - progress);
+          content.setAlpha(1 - progress);
         },
         onComplete: () => {
           block.setData("messageTween", null);
@@ -433,13 +542,15 @@ export class TownSquareScene extends Phaser.Scene {
     const label = block.getAt(1) as Phaser.GameObjects.Text;
     const timer = block.getData("messageTimer") as Phaser.Time.TimerEvent | undefined;
     const fadeTween = block.getData("messageTween") as Phaser.Tweens.Tween | undefined;
-    const messageText = block.getData("messageText") as Phaser.GameObjects.Text | undefined;
+    const messageContent = block.getData("messageContent") as Phaser.GameObjects.Text | Phaser.GameObjects.Image | undefined;
+    const textureKey = block.getData("messageTextureKey") as string | undefined;
     timer?.remove(false);
     fadeTween?.stop();
-    if (messageText) {
-      this.tweens.killTweensOf(messageText);
-      messageText.destroy();
+    if (messageContent) {
+      this.tweens.killTweensOf(messageContent);
+      messageContent.destroy();
     }
+    if (textureKey && this.textures.exists(textureKey)) this.textures.remove(textureKey);
     this.tweens.killTweensOf(square);
     square.setDisplaySize(42, 42).setAlpha(1);
     const baseColor = block.getData("baseColor") as string;
@@ -447,9 +558,65 @@ export class TownSquareScene extends Phaser.Scene {
     label.setY(-39).setAlpha(1);
     block.setSize(42, 42);
     block.setData("messageActive", false);
-    block.setData("messageText", null);
+    block.setData("messageId", null);
+    block.setData("messageContent", null);
+    block.setData("messageTextureKey", null);
     block.setData("messageTimer", null);
     block.setData("messageTween", null);
+  }
+
+  private setPhotoPreparing(preparing: boolean): void {
+    if (this.photoButton) {
+      this.photoButton.disabled = preparing;
+      this.photoButton.setAttribute("aria-busy", String(preparing));
+    }
+    this.chatForm?.classList.toggle("is-preparing-photo", preparing);
+  }
+
+  private async prepareTemporaryImage(file: File): Promise<string> {
+    const objectUrl = URL.createObjectURL(file);
+    const source = new window.Image();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        source.onload = () => resolve();
+        source.onerror = () => reject(new Error("The selected file is not a readable picture."));
+        source.src = objectUrl;
+      });
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+
+    if (!source.naturalWidth || !source.naturalHeight) throw new Error("The picture has no dimensions.");
+    let maxDimension = 720;
+    const qualities = [0.78, 0.66, 0.54, 0.42];
+
+    for (let sizeAttempt = 0; sizeAttempt < 5; sizeAttempt += 1) {
+      const scale = Math.min(1, maxDimension / Math.max(source.naturalWidth, source.naturalHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(source.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(source.naturalHeight * scale));
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("This browser cannot resize pictures.");
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      context.drawImage(source, 0, 0, canvas.width, canvas.height);
+
+      for (const quality of qualities) {
+        const imageDataUrl = canvas.toDataURL("image/jpeg", quality);
+        if (imageDataUrl.length <= MAX_IMAGE_DATA_URL_CHARS) return imageDataUrl;
+      }
+      maxDimension = Math.max(300, Math.floor(maxDimension * 0.78));
+    }
+
+    throw new Error("The compressed picture is still too large for temporary chat.");
+  }
+
+  private isSafeTemporaryImage(value: unknown): value is string {
+    return typeof value === "string"
+      && value.length <= MAX_IMAGE_DATA_URL_CHARS
+      && value.startsWith("data:image/jpeg;base64,");
   }
 
   private updateChatComposerPosition(): void {
@@ -457,7 +624,8 @@ export class TownSquareScene extends Phaser.Scene {
     const camera = this.cameras.main;
     const screenX = (this.player.x - camera.worldView.x) * camera.zoom + camera.x;
     const screenY = (this.player.y - camera.worldView.y) * camera.zoom + camera.y;
-    this.chatForm.style.left = `${Phaser.Math.Clamp(screenX, 145, this.scale.width - 145)}px`;
+    const horizontalMargin = (this.chatForm.offsetWidth / 2) + 8;
+    this.chatForm.style.left = `${Phaser.Math.Clamp(screenX, horizontalMargin, this.scale.width - horizontalMargin)}px`;
     this.chatForm.style.top = `${Phaser.Math.Clamp(screenY - 72, 70, this.scale.height - 90)}px`;
   }
 
