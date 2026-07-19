@@ -14,7 +14,13 @@ type ConnectionStatus = "connecting" | "online" | "offline" | "error";
 interface RealtimeCallbacks {
   onPlayers(players: OnlinePlayer[]): void;
   onMovement(player: OnlinePlayer): void;
+  onCount(count: number): void;
   onStatus(status: ConnectionStatus): void;
+}
+
+interface HelloPayload {
+  player: OnlinePlayer;
+  replyRequested: boolean;
 }
 
 const CHANNEL_NAME = "city:nashville:town-square";
@@ -58,11 +64,23 @@ export class RealtimeTownSquare {
         const player = payload as OnlinePlayer;
         if (player.id !== this.connectionId) this.callbacks.onMovement(player);
       })
+      .on("broadcast", { event: "player_hello" }, ({ payload }) => {
+        const hello = payload as HelloPayload;
+        if (hello.player.id === this.connectionId) return;
+        this.callbacks.onMovement(hello.player);
+        if (hello.replyRequested) this.sendHello(false);
+      })
       .subscribe(async status => {
         if (status === "SUBSCRIBED") {
           this.subscribed = true;
-          if (this.currentState) await this.channel?.track(this.currentState);
-          this.callbacks.onStatus("online");
+          const trackStatus = this.currentState ? await this.channel?.track(this.currentState) : "error";
+          if (trackStatus === "ok") {
+            this.callbacks.onStatus("online");
+            this.sendHello(true);
+          } else {
+            console.error("Supabase Presence track failed", trackStatus);
+            this.callbacks.onStatus("error");
+          }
         } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
           this.callbacks.onStatus("error");
         } else if (status === "CLOSED") {
@@ -112,9 +130,19 @@ export class RealtimeTownSquare {
   private syncPresence(): void {
     if (!this.channel) return;
     const state = this.channel.presenceState<OnlinePlayer>();
-    const players = Object.values(state)
-      .flat()
-      .filter(player => player.id !== this.connectionId);
-    this.callbacks.onPlayers(players);
+    const allPlayers = Object.entries(state).flatMap(([presenceKey, presences]) =>
+      presences.map(player => ({ ...player, id: presenceKey })),
+    );
+    this.callbacks.onCount(allPlayers.length);
+    this.callbacks.onPlayers(allPlayers.filter(player => player.id !== this.connectionId));
+  }
+
+  private sendHello(replyRequested: boolean): void {
+    if (!this.channel || !this.subscribed || !this.currentState) return;
+    void this.channel.send({
+      type: "broadcast",
+      event: "player_hello",
+      payload: { player: this.currentState, replyRequested } satisfies HelloPayload,
+    });
   }
 }
