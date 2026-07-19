@@ -8,6 +8,10 @@ button, input { font: inherit; }
 .brand, .hint, .panel { background: rgba(16,24,43,.88); border: 1px solid rgba(255,255,255,.16); border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.24); backdrop-filter: blur(10px); }
 .brand { padding: 11px 14px; font-weight: 800; letter-spacing: -.03em; }
 .brand small { display: block; color: #9eb0cc; font-size: .72rem; letter-spacing: .05em; margin-top: 2px; }
+.connection { display: inline-flex; align-items: center; gap: 5px; margin-top: 7px; padding: 3px 7px; border-radius: 999px; color: #c7d4ea; background: rgba(255,255,255,.08); font-size: .66rem; letter-spacing: .04em; }
+.connection::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #ffd166; }
+.connection.is-online::before { background: #06d6a0; box-shadow: 0 0 8px rgba(6,214,160,.7); }
+.connection.is-error::before, .connection.is-offline::before { background: #ff6b6b; }
 .edit { pointer-events: auto; border: 0; border-radius: 12px; padding: 10px 13px; background: #ffd166; color: #182033; font-weight: 800; cursor: pointer; }
 .hint { align-self: center; padding: 10px 14px; color: #c7d4ea; text-align: center; max-width: 460px; font-size: .9rem; }
 .panel { pointer-events: auto; position: fixed; top: 76px; right: 16px; width: min(340px, calc(100vw - 32px)); padding: 16px; }
