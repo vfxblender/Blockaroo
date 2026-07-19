@@ -19,6 +19,6 @@ button, input { font: inherit; }
 .swatch { width: 28px; height: 28px; border-radius: 9px; border: 3px solid transparent; cursor: pointer; }
 .swatch.selected { border-color: white; transform: scale(1.12); }
 .save { margin-top: 15px; width: 100%; padding: 11px; border: 0; border-radius: 10px; background: #06d6a0; color: #072d29; font-weight: 900; cursor: pointer; }
-.joystick { pointer-events: auto; position: fixed; left: 20px; bottom: max(24px, env(safe-area-inset-bottom)); width: 112px; height: 112px; border-radius: 50%; border: 1px solid rgba(255,255,255,.22); background: rgba(16,24,43,.45); touch-action: none; }
+.joystick { pointer-events: auto; position: fixed; left: 20px; bottom: max(24px, env(safe-area-inset-bottom)); width: 112px; height: 112px; border-radius: 50%; border: 1px solid rgba(255,255,255,.22); background: rgba(16,24,43,.45); touch-action: none; user-select: none; -webkit-user-select: none; }
 .joystick::after { content: ""; position: absolute; inset: 36px; border-radius: 50%; background: rgba(255,255,255,.33); }
-@media (pointer:fine) { .joystick { display:none; } }
+@media (hover:hover) and (pointer:fine) { .joystick { opacity: .38; } .joystick:hover { opacity: 1; } }
