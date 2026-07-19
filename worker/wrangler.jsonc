@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "blockaroo-world",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-19",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "TOWN_SQUARE",
+        "class_name": "TownSquareRoom"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["TownSquareRoom"]
+    }
+  ],
+  "vars": {
+    "ALLOWED_ORIGINS": "https://vfxblender.github.io,http://localhost:5173,http://127.0.0.1:5173",
+    "SUPABASE_URL": "https://gjgeairzynwblfrpojyc.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_rKxx_3UTm8rn_M4OEMjMNQ_r8Wxgxss"
+  }
+}

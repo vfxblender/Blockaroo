@@ -1,0 +1,4 @@
+project_id = "gjgeairzynwblfrpojyc"
+
+[functions.cleanup-temporary-media]
+verify_jwt = false
