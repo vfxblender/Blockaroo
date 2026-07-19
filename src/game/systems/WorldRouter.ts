@@ -1,1 +1,22 @@
-aW1wb3J0IHR5cGUgeyBXb3JsZExvY2F0aW9uIH0gZnJvbSAiLi4vdHlwZXMvd29ybGQiOwoKLyoqCiAqIFRoZSBwcm90b3R5cGUgb25seSByZW5kZXJzIFRvd24gU3F1YXJlLCBidXQgYWxsIG1vdmVtZW50IGlzIGFscmVhZHkgc2NvcGVkCiAqIHRvIGEgbG9jYXRpb24uIEFkZGluZyBob21lcywgcHJpdmF0ZSBvdmVyd29ybGRzLCBhbmQgY2l0aWVzIGJlY29tZXMgYSBzY2VuZQogKiByb3V0aW5nIHByb2JsZW0gcmF0aGVyIHRoYW4gYSBkYXRhYmFzZSByZXdyaXRlLgogKi8KZXhwb3J0IGNsYXNzIFdvcmxkUm91dGVyIHsKICBwcml2YXRlIGxvY2F0aW9uOiBXb3JsZExvY2F0aW9uID0gewogICAgY2l0eUlkOiAibmFzaHZpbGxlIiwKICAgIHNwYWNlSWQ6ICJ0b3duLXNxdWFyZSIsCiAgICBraW5kOiAidG93bi1zcXVhcmUiLAogIH07CgogIGN1cnJlbnQoKTogV29ybGRMb2NhdGlvbiB7CiAgICByZXR1cm4gdGhpcy5sb2NhdGlvbjsKICB9CgogIGdvVG8obG9jYXRpb246IFdvcmxkTG9jYXRpb24pOiB2b2lkIHsKICAgIHRoaXMubG9jYXRpb24gPSBsb2NhdGlvbjsKICB9Cn0K
+import type { WorldLocation } from "../types/world";
+
+/**
+ * The prototype only renders Town Square, but all movement is already scoped
+ * to a location. Adding homes, private overworlds, and cities becomes a scene
+ * routing problem rather than a database rewrite.
+ */
+export class WorldRouter {
+  private location: WorldLocation = {
+    cityId: "nashville",
+    spaceId: "town-square",
+    kind: "town-square",
+  };
+
+  current(): WorldLocation {
+    return this.location;
+  }
+
+  goTo(location: WorldLocation): void {
+    this.location = location;
+  }
+}
