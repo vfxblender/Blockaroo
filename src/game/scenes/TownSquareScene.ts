@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 import { PALETTE, WORLD } from "../config";
 import { loadProfile, saveProfile } from "../systems/LocalProfile";
-import { RealtimeTownSquare, type OnlinePlayer } from "../systems/RealtimeTownSquare";
+import { RealtimeTownSquare, type BlockChatMessage, type OnlinePlayer } from "../systems/RealtimeTownSquare";
 import { WorldRouter } from "../systems/WorldRouter";
 import type { PlayerIdentity } from "../types/world";
 
@@ -24,6 +24,10 @@ export class TownSquareScene extends Phaser.Scene {
   private reconnecting = false;
   private reconnectTimer: number | null = null;
   private wasHidden = document.visibilityState === "hidden";
+  private chatForm: HTMLFormElement | null = null;
+  private chatInput: HTMLInputElement | null = null;
+  private profilePanel: HTMLElement | null = null;
+  private composingChat = false;
   private router = new WorldRouter();
 
   constructor() { super("TownSquare"); }
@@ -48,6 +52,7 @@ export class TownSquareScene extends Phaser.Scene {
     this.createHud();
     void this.startMultiplayer();
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+      this.closeChatComposer(true);
       this.moveTarget = new Phaser.Math.Vector2(pointer.worldX, pointer.worldY);
     });
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -99,6 +104,7 @@ export class TownSquareScene extends Phaser.Scene {
       remote.body.y = Phaser.Math.Linear(remote.body.y, remote.target.y, blend);
       remote.body.setDepth(remote.body.y);
     }
+    this.updateChatComposerPosition();
   }
 
   private drawWorld(): void {
@@ -120,12 +126,20 @@ export class TownSquareScene extends Phaser.Scene {
   }
 
   private makePlayer(identity: PlayerIdentity, x: number, y: number, local = false): Phaser.GameObjects.Container {
-    const square = this.add.rectangle(0, 0, 42, 42, Phaser.Display.Color.HexStringToColor(identity.color).color, 1).setStrokeStyle(3, 0x0b1020, 1).setInteractive({ useHandCursor: !local });
+    const square = this.add.rectangle(0, 0, 42, 42, Phaser.Display.Color.HexStringToColor(identity.color).color, 1).setStrokeStyle(3, 0x0b1020, 1).setInteractive({ useHandCursor: true });
     const label = this.add.text(0, -39, identity.username, { fontFamily: "system-ui", fontSize: "13px", color: "#ffffff", stroke: "#17223a", strokeThickness: 4 }).setOrigin(.5);
     const block = this.add.container(x, y, [square, label]);
     block.setSize(42, 42);
     block.setDepth(y);
-    if (!local) {
+    block.setData("baseColor", identity.color);
+    block.setData("messageActive", false);
+    if (local) {
+      square.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
+        event.stopPropagation();
+        this.moveTarget = null;
+        this.openChatComposer();
+      });
+    } else {
       square.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
         event.stopPropagation();
         this.moveTarget = null;
@@ -139,10 +153,11 @@ export class TownSquareScene extends Phaser.Scene {
   private createHud(): void {
     const hud = document.createElement("section");
     hud.className = "hud";
-    hud.innerHTML = `<div class="topbar"><div class="brand">BLOCKAROO<small>Nashville · Town Square</small><span class="connection is-connecting">Connecting…</span></div><button class="edit">Your block</button></div><aside class="panel" hidden><h2>Your block</h2><label class="field">Display name<input maxlength="18" value="${this.escape(this.profile.username)}" /></label><label class="field">Block color<div class="swatches">${PALETTE.map(c => `<button class="swatch ${c === this.profile.color ? "selected" : ""}" aria-label="Choose color" style="background:${c}" data-color="${c}"></button>`).join("")}</div></label><button class="save">Enter Town Square</button></aside><div class="hint">WASD / arrows · click or tap the ground · drag the joystick</div><div class="joystick" aria-label="Movement joystick"><span class="joystick-knob"></span></div>`;
+    hud.innerHTML = `<div class="topbar"><div class="brand">BLOCKAROO<small>Nashville · Town Square</small><span class="connection is-connecting">Connecting…</span></div><button class="edit">Your block</button></div><aside class="panel" hidden><h2>Your block</h2><label class="field">Display name<input maxlength="18" value="${this.escape(this.profile.username)}" /></label><label class="field">Block color<div class="swatches">${PALETTE.map(c => `<button class="swatch ${c === this.profile.color ? "selected" : ""}" aria-label="Choose color" style="background:${c}" data-color="${c}"></button>`).join("")}</div></label><button class="save">Enter Town Square</button></aside><form class="chat-composer" hidden><input maxlength="120" autocomplete="off" enterkeyhint="send" aria-label="Write a message" placeholder="Say something…" /></form><div class="hint">Click your block to speak · WASD / arrows · tap ground · joystick</div><div class="joystick" aria-label="Movement joystick"><span class="joystick-knob"></span></div>`;
     document.body.append(hud);
     this.statusElement = hud.querySelector<HTMLElement>(".connection")!;
     const panel = hud.querySelector<HTMLElement>(".panel")!;
+    this.profilePanel = panel;
     const nameInput = panel.querySelector<HTMLInputElement>("input")!;
     const keyboard = this.input.keyboard!;
     nameInput.addEventListener("focus", () => {
@@ -156,6 +171,7 @@ export class TownSquareScene extends Phaser.Scene {
       keyboard.enableGlobalCapture();
     });
     hud.querySelector<HTMLButtonElement>(".edit")!.onclick = () => {
+      this.closeChatComposer(true);
       panel.hidden = !panel.hidden;
       if (panel.hidden) nameInput.blur();
     };
@@ -166,11 +182,32 @@ export class TownSquareScene extends Phaser.Scene {
       this.profile = { ...this.profile, username, color: selected };
       saveProfile(this.profile);
       this.nameLabel.setText(username);
-      (this.player.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(Phaser.Display.Color.HexStringToColor(selected).color);
+      this.player.setData("baseColor", selected);
+      if (!this.player.getData("messageActive") && !this.composingChat) {
+        (this.player.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(Phaser.Display.Color.HexStringToColor(selected).color);
+      }
       this.network?.updatePresence(this.profile, this.player.x, this.player.y);
       nameInput.blur();
       panel.hidden = true;
     };
+    this.chatForm = hud.querySelector<HTMLFormElement>(".chat-composer")!;
+    this.chatInput = this.chatForm.querySelector<HTMLInputElement>("input")!;
+    this.chatInput.addEventListener("focus", () => {
+      keyboard.disableGlobalCapture();
+      keyboard.enabled = false;
+      (this.player.body as Phaser.Physics.Arcade.Body).setVelocity(0);
+      this.moveTarget = null;
+    });
+    this.chatInput.addEventListener("keydown", event => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        this.closeChatComposer(true);
+      }
+    });
+    this.chatForm.addEventListener("submit", event => {
+      event.preventDefault();
+      this.submitChatMessage();
+    });
     const stick = hud.querySelector<HTMLElement>(".joystick")!;
     const knob = stick.querySelector<HTMLElement>(".joystick-knob")!;
     let joystickPointer: number | null = null;
@@ -211,6 +248,7 @@ export class TownSquareScene extends Phaser.Scene {
     this.network = new RealtimeTownSquare({
       onPlayers: players => this.syncOnlinePlayers(players),
       onMovement: player => this.upsertRemote(player),
+      onChat: message => this.receiveChatMessage(message),
       onCount: count => this.setOnlineCount(count),
       onStatus: status => this.setConnectionStatus(status),
     });
@@ -279,7 +317,10 @@ export class TownSquareScene extends Phaser.Scene {
       if (player.updatedAt < existing.updatedAt) return;
       existing.updatedAt = player.updatedAt;
       existing.target.set(player.x, player.y);
-      (existing.body.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(Phaser.Display.Color.HexStringToColor(player.color).color);
+      existing.body.setData("baseColor", player.color);
+      if (!existing.body.getData("messageActive")) {
+        (existing.body.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(Phaser.Display.Color.HexStringToColor(player.color).color);
+      }
       (existing.body.getAt(1) as Phaser.GameObjects.Text).setText(player.username);
       return;
     }
@@ -290,6 +331,134 @@ export class TownSquareScene extends Phaser.Scene {
       target: new Phaser.Math.Vector2(player.x, player.y),
       updatedAt: player.updatedAt,
     });
+  }
+
+  private openChatComposer(): void {
+    if (!this.chatForm || !this.chatInput) return;
+    this.clearBlockMessage(this.player);
+    this.composingChat = true;
+    if (this.profilePanel) this.profilePanel.hidden = true;
+    (this.player.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(0xffffff);
+    this.chatInput.value = "";
+    this.chatForm.hidden = false;
+    this.updateChatComposerPosition();
+    window.setTimeout(() => this.chatInput?.focus(), 0);
+  }
+
+  private closeChatComposer(restoreColor: boolean): void {
+    if (!this.composingChat) return;
+    this.composingChat = false;
+    if (this.chatForm) this.chatForm.hidden = true;
+    this.chatInput?.blur();
+    const keyboard = this.input.keyboard;
+    if (keyboard) {
+      keyboard.enabled = true;
+      keyboard.enableGlobalCapture();
+    }
+    if (restoreColor && !this.player.getData("messageActive")) {
+      const baseColor = this.player.getData("baseColor") as string;
+      (this.player.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(Phaser.Display.Color.HexStringToColor(baseColor).color);
+    }
+  }
+
+  private submitChatMessage(): void {
+    const text = this.chatInput?.value.trim().replace(/\s+/g, " ").slice(0, 120) ?? "";
+    if (!text) {
+      this.closeChatComposer(true);
+      return;
+    }
+
+    const message = this.network?.sendChat(this.profile, text, this.player.x, this.player.y);
+    this.closeChatComposer(false);
+    this.showBlockMessage(this.player, text, message?.durationMs ?? 12_000);
+  }
+
+  private receiveChatMessage(message: BlockChatMessage): void {
+    const remaining = message.durationMs - (Date.now() - message.sentAt);
+    if (remaining <= 0) return;
+    this.upsertRemote(message.player);
+    const remote = this.remotes.get(message.player.id);
+    if (remote) this.showBlockMessage(remote.body, message.text.slice(0, 120), remaining);
+  }
+
+  private showBlockMessage(block: Phaser.GameObjects.Container, text: string, durationMs: number): void {
+    this.clearBlockMessage(block);
+    const square = block.getAt(0) as Phaser.GameObjects.Rectangle;
+    const label = block.getAt(1) as Phaser.GameObjects.Text;
+    const messageText = this.add.text(0, 0, text, {
+      fontFamily: "system-ui",
+      fontSize: "15px",
+      color: "#0b1020",
+      align: "center",
+      wordWrap: { width: 220, useAdvancedWrap: true },
+    }).setOrigin(.5);
+    block.add(messageText);
+
+    const width = Phaser.Math.Clamp(Math.ceil(messageText.width + 24), 58, 250);
+    const height = Phaser.Math.Clamp(Math.ceil(messageText.height + 20), 48, 150);
+    square.setFillStyle(0xffffff).setDisplaySize(width, height);
+    label.setY(-(height / 2) - 15);
+    block.setSize(width, height);
+    block.setData("messageActive", true);
+    block.setData("messageText", messageText);
+
+    const timer = this.time.delayedCall(Math.max(500, durationMs - 900), () => {
+      const baseColor = Phaser.Display.Color.HexStringToColor(block.getData("baseColor") as string);
+      const white = Phaser.Display.Color.ValueToColor(0xffffff);
+      const fadeTween = this.tweens.addCounter({
+        from: 0,
+        to: 100,
+        duration: Math.min(900, durationMs),
+        ease: "Sine.easeInOut",
+        onUpdate: tween => {
+          const progress = (tween.getValue() ?? 0) / 100;
+          const color = Phaser.Display.Color.Interpolate.ColorWithColor(white, baseColor, 100, progress * 100);
+          square.setFillStyle(Phaser.Display.Color.GetColor(color.r, color.g, color.b));
+          square.setDisplaySize(Phaser.Math.Linear(width, 42, progress), Phaser.Math.Linear(height, 42, progress));
+          label.setY(Phaser.Math.Linear(-(height / 2) - 15, -39, progress));
+          messageText.setAlpha(1 - progress);
+        },
+        onComplete: () => {
+          block.setData("messageTween", null);
+          this.clearBlockMessage(block);
+        },
+      });
+      block.setData("messageTween", fadeTween);
+    });
+    block.setData("messageTimer", timer);
+  }
+
+  private clearBlockMessage(block: Phaser.GameObjects.Container): void {
+    const square = block.getAt(0) as Phaser.GameObjects.Rectangle;
+    const label = block.getAt(1) as Phaser.GameObjects.Text;
+    const timer = block.getData("messageTimer") as Phaser.Time.TimerEvent | undefined;
+    const fadeTween = block.getData("messageTween") as Phaser.Tweens.Tween | undefined;
+    const messageText = block.getData("messageText") as Phaser.GameObjects.Text | undefined;
+    timer?.remove(false);
+    fadeTween?.stop();
+    if (messageText) {
+      this.tweens.killTweensOf(messageText);
+      messageText.destroy();
+    }
+    this.tweens.killTweensOf(square);
+    square.setDisplaySize(42, 42).setAlpha(1);
+    const baseColor = block.getData("baseColor") as string;
+    square.setFillStyle(Phaser.Display.Color.HexStringToColor(baseColor).color);
+    label.setY(-39).setAlpha(1);
+    block.setSize(42, 42);
+    block.setData("messageActive", false);
+    block.setData("messageText", null);
+    block.setData("messageTimer", null);
+    block.setData("messageTween", null);
+  }
+
+  private updateChatComposerPosition(): void {
+    if (!this.chatForm || this.chatForm.hidden) return;
+    const camera = this.cameras.main;
+    const screenX = (this.player.x - camera.worldView.x) * camera.zoom + camera.x;
+    const screenY = (this.player.y - camera.worldView.y) * camera.zoom + camera.y;
+    this.chatForm.style.left = `${Phaser.Math.Clamp(screenX, 145, this.scale.width - 145)}px`;
+    this.chatForm.style.top = `${Phaser.Math.Clamp(screenY - 72, 70, this.scale.height - 90)}px`;
   }
 
   private setConnectionStatus(status: "connecting" | "online" | "offline" | "error"): void {
