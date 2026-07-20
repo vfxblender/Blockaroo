@@ -11,6 +11,7 @@ import { WORLD } from "../config";
 import type { PlayerIdentity } from "../types/world";
 import { getOrCreateAnonymousSession } from "../../services/supabase";
 import { CloudflarePhotoStore } from "../../services/CloudflarePhotoStore";
+import { ServerClock } from "./ServerClock";
 import type {
   BlockChatMessage,
   OnlinePlayer,
@@ -48,6 +49,7 @@ export class WebSocketTownSquare implements TownSquareTransport {
   private lastPingAt = 0;
   private playersBySlot = new Map<number, OnlinePlayer>();
   private readonly photos: CloudflarePhotoStore;
+  private readonly serverClock = new ServerClock();
   private pendingPhotoGrant: PendingPhotoGrant | null = null;
 
   constructor(
@@ -74,6 +76,7 @@ export class WebSocketTownSquare implements TownSquareTransport {
     this.lastDirectionY = 0;
     this.lastMovementAt = 0;
     this.lastPingAt = 0;
+    this.serverClock.reset();
 
     const session = await getOrCreateAnonymousSession();
     if (generation !== this.generation) return this.connectionId;
@@ -129,12 +132,14 @@ export class WebSocketTownSquare implements TownSquareTransport {
           return;
         }
         if (message.type === "welcome" && !settled) {
+          const receivedAt = Date.now();
+          this.serverClock.observeWelcome(message.serverTime, receivedAt);
           settled = true;
           window.clearTimeout(timeout);
           this._connectionId = message.playerId;
           this.localSlot = message.slot;
           this.lastMovementAt = 0;
-          this.lastPingAt = Date.now();
+          this.sendPing(receivedAt);
           this.callbacks.onCount(message.onlineCount);
           this.callbacks.onStatus("online");
           resolve(message.playerId);
@@ -171,15 +176,14 @@ export class WebSocketTownSquare implements TownSquareTransport {
         sequence: this.sequence,
         directionX: direction.x,
         directionY: direction.y,
-        sentAtLow16: now & 0xffff,
+        sentAtLow16: Math.round(this.serverClock.toServerTime(now)) & 0xffff,
       }));
       this.lastDirectionX = direction.x;
       this.lastDirectionY = direction.y;
       this.lastMovementAt = now;
     }
     if (now - this.lastPingAt >= ROOM_RECONCILE_MS) {
-      this.lastPingAt = now;
-      this.sendJson({ type: "ping", sentAt: now });
+      this.sendPing(now);
     }
   }
 
@@ -266,6 +270,10 @@ export class WebSocketTownSquare implements TownSquareTransport {
       this.callbacks.onCount(message.onlineCount);
       return;
     }
+    if (message.type === "pong") {
+      this.serverClock.observePong(message.sentAt, message.serverTime);
+      return;
+    }
     if (message.type === "chat") {
       if (message.player.id === this.connectionId) return;
       const player = this.toOnlinePlayer(message.player);
@@ -275,7 +283,7 @@ export class WebSocketTownSquare implements TownSquareTransport {
         player,
         kind: "text",
         text: message.text,
-        sentAt: message.sentAt,
+        sentAt: this.serverClock.toLocalTime(message.sentAt),
         durationMs: message.durationMs,
       });
       return;
@@ -283,7 +291,7 @@ export class WebSocketTownSquare implements TownSquareTransport {
     if (message.type === "photo") {
       if (message.player.id === this.connectionId) return;
       try {
-        const imageDataUrl = this.photos.downloadUrl(message.mediaId, message.downloadToken);
+        const imageDataUrl = await this.photos.download(message.mediaId, message.downloadToken);
         const player = this.toOnlinePlayer(message.player);
         this.playersBySlot.set(player.slot, player);
         this.callbacks.onChat({
@@ -293,7 +301,7 @@ export class WebSocketTownSquare implements TownSquareTransport {
           text: "",
           imageDataUrl,
           mediaId: message.mediaId,
-          sentAt: message.sentAt,
+          sentAt: this.serverClock.toLocalTime(message.sentAt),
           durationMs: message.durationMs,
         });
       } catch (error) {
@@ -338,7 +346,8 @@ export class WebSocketTownSquare implements TownSquareTransport {
     const batch = decodeStateBatch(buffer);
     if (!batch) return;
     const receivedAt = Date.now();
-    const unsignedLag = ((receivedAt >>> 0) - batch.serverTime) >>> 0;
+    const estimatedServerTime = Math.round(this.serverClock.toServerTime(receivedAt));
+    const unsignedLag = ((estimatedServerTime >>> 0) - batch.serverTime) >>> 0;
     const lagSeconds = unsignedLag <= 2_000 ? unsignedLag / 1000 : 0;
     for (const state of batch.records) {
       const projectedX = Math.max(21, Math.min(WORLD.width - 21, state.x + state.velocityX * lagSeconds));
@@ -378,6 +387,11 @@ export class WebSocketTownSquare implements TownSquareTransport {
       zone: 1,
       updatedAt: Date.now(),
     };
+  }
+
+  private sendPing(sentAt = Date.now()): void {
+    this.lastPingAt = sentAt;
+    this.sendJson({ type: "ping", sentAt });
   }
 
   private sendJson(message: object): void {

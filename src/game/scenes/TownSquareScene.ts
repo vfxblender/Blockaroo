@@ -117,7 +117,7 @@ export class TownSquareScene extends Phaser.Scene {
 
     this.network?.sendMovement(this.profile, this.player.x, this.player.y, direction.x, direction.y);
     if (this.localCorrection) {
-      const correctionBlend = 1 - Math.exp(-delta * 0.009);
+      const correctionBlend = 1 - Math.exp(-delta * 0.0045);
       this.player.x += this.localCorrection.x * correctionBlend;
       this.player.y += this.localCorrection.y * correctionBlend;
       this.localCorrection.scale(1 - correctionBlend);
@@ -696,13 +696,16 @@ export class TownSquareScene extends Phaser.Scene {
     }
   }
 
-  private applyAuthoritativeCorrection(x: number, y: number, _velocityX: number, _velocityY: number, _sequence: number): void {
+  private applyAuthoritativeCorrection(x: number, y: number, velocityX: number, velocityY: number, _sequence: number): void {
     const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, x, y);
+    const tolerance = velocityX === 0 && velocityY === 0 ? 10 : 6;
     if (distance > 160) {
       this.player.setPosition(x, y);
       this.localCorrection = null;
-    } else if (distance > 4) {
+    } else if (distance > tolerance) {
       this.localCorrection = new Phaser.Math.Vector2(x - this.player.x, y - this.player.y);
+    } else {
+      this.localCorrection = null;
     }
   }
 

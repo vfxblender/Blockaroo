@@ -79,6 +79,7 @@ const PHOTO_GRANT_LIFETIME_MS = 30_000;
 const PHOTO_DOWNLOAD_LIFETIME_MS = 45_000;
 const PHOTO_RETENTION_MS = 2 * 60_000;
 const MAX_PHOTO_BYTES = 110 * 1024;
+const MAX_MOVEMENT_REWIND_MS = 500;
 const TICKET_LIFETIME_SECONDS = 75;
 const MAX_TEXT_LENGTH = 120;
 const PROFILE_NAME_LENGTH = 18;
@@ -342,7 +343,7 @@ export class TownSquareRoom implements DurableObject {
     if (sequence === attachment.sequence || !isNewerSequence(sequence, attachment.sequence)) return;
     const now = Date.now();
     const packetAge = (((now & 0xffff) - sentAtLow16) & 0xffff);
-    const effectiveTime = packetAge <= 2_000 ? now - packetAge : now;
+    const effectiveTime = packetAge <= MAX_MOVEMENT_REWIND_MS ? now - packetAge : now;
     const projected = this.project(attachment, effectiveTime);
     const direction = normalizeDirection(rawDirectionX, rawDirectionY);
     const nextVelocityX = Math.round(direction.x * MOVEMENT_SPEED);
