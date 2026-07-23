@@ -67,7 +67,7 @@ export class TownSquareScene extends Phaser.Scene {
   private playerCard: HTMLElement | null = null;
   private selectedRemoteId: string | null = null;
   private emojiMenu: HTMLElement | null = null;
-  private portalButton: Phaser.GameObjects.Zone | null = null;
+  private portalButton: Phaser.GameObjects.Arc | null = null;
   private portalIcon: Phaser.GameObjects.Graphics | null = null;
   private mutedUserIds = new Set<string>(loadStoredIds("blockaroo.muted-users"));
   private blockedUserIds = new Set<string>(loadStoredIds("blockaroo.blocked-users"));
@@ -241,7 +241,7 @@ export class TownSquareScene extends Phaser.Scene {
         this.closePlayerCard();
         this.openChatComposer();
       });
-      const portalButton = this.add.zone(0, 0, 38, 38)
+      const portalButton = this.add.circle(0, 0, 19, 0x050813, 0.001)
         .setInteractive({ useHandCursor: true });
       const portalIcon = this.add.graphics();
       portalIcon.lineStyle(3, 0x050813, 1);
