@@ -67,7 +67,7 @@ export class TownSquareScene extends Phaser.Scene {
   private playerCard: HTMLElement | null = null;
   private selectedRemoteId: string | null = null;
   private emojiMenu: HTMLElement | null = null;
-  private portalButton: Phaser.GameObjects.Arc | null = null;
+  private portalButton: Phaser.GameObjects.Zone | null = null;
   private portalIcon: Phaser.GameObjects.Graphics | null = null;
   private mutedUserIds = new Set<string>(loadStoredIds("blockaroo.muted-users"));
   private blockedUserIds = new Set<string>(loadStoredIds("blockaroo.blocked-users"));
@@ -241,18 +241,22 @@ export class TownSquareScene extends Phaser.Scene {
         this.closePlayerCard();
         this.openChatComposer();
       });
-      const portalButton = this.add.circle(0, 0, 15, 0x0b1020, 0.96)
-        .setStrokeStyle(2, 0xffffff, 1)
+      const portalButton = this.add.zone(0, 0, 38, 38)
         .setInteractive({ useHandCursor: true });
       const portalIcon = this.add.graphics();
-      portalIcon.lineStyle(2, 0xffffff, 1);
+      portalIcon.lineStyle(3, 0x050813, 1);
       portalIcon.beginPath();
-      portalIcon.moveTo(-8, -1);
-      portalIcon.lineTo(0, -8);
-      portalIcon.lineTo(8, -1);
+      portalIcon.moveTo(-10, -1);
+      portalIcon.lineTo(0, -10);
+      portalIcon.lineTo(10, -1);
+      portalIcon.lineTo(10, 10);
+      portalIcon.lineTo(3, 10);
+      portalIcon.lineTo(3, 3);
+      portalIcon.lineTo(-3, 3);
+      portalIcon.lineTo(-3, 10);
+      portalIcon.lineTo(-10, 10);
+      portalIcon.closePath();
       portalIcon.strokePath();
-      portalIcon.strokeRect(-6, -1, 12, 9);
-      portalIcon.strokeRect(-2, 3, 4, 5);
       portalButton.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
         event.stopPropagation();
         this.moveTarget = null;
