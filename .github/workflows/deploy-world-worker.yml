@@ -20,7 +20,27 @@ jobs:
         working-directory: worker
       - run: npm run check
         working-directory: worker
-      - uses: cloudflare/wrangler-action@v3
+      - name: Deploy with TURN relay
+        if: ${{ secrets.CLOUDFLARE_TURN_KEY_ID != '' && secrets.CLOUDFLARE_TURN_API_TOKEN != '' }}
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          command: deploy
+          secrets: |
+            TICKET_SECRET
+            MEDIA_SECRET
+            CLOUDFLARE_TURN_KEY_ID
+            CLOUDFLARE_TURN_API_TOKEN
+        env:
+          TICKET_SECRET: ${{ secrets.WORLD_TICKET_SECRET }}
+          MEDIA_SECRET: ${{ secrets.WORLD_MEDIA_SECRET }}
+          CLOUDFLARE_TURN_KEY_ID: ${{ secrets.CLOUDFLARE_TURN_KEY_ID }}
+          CLOUDFLARE_TURN_API_TOKEN: ${{ secrets.CLOUDFLARE_TURN_API_TOKEN }}
+      - name: Deploy without optional TURN relay
+        if: ${{ secrets.CLOUDFLARE_TURN_KEY_ID == '' || secrets.CLOUDFLARE_TURN_API_TOKEN == '' }}
+        uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

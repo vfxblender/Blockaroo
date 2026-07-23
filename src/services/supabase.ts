@@ -8,12 +8,25 @@ export const supabase = supabaseUrl && supabaseKey
       auth: {
         persistSession: true,
         autoRefreshToken: true,
-        detectSessionInUrl: false,
+        detectSessionInUrl: true,
+        flowType: "pkce",
       },
     })
   : null;
 
+let sessionPromise: Promise<Session> | null = null;
+
 export async function getOrCreateAnonymousSession(): Promise<Session> {
+  sessionPromise ??= createOrReuseSession();
+  const pending = sessionPromise;
+  try {
+    return await pending;
+  } finally {
+    if (sessionPromise === pending) sessionPromise = null;
+  }
+}
+
+async function createOrReuseSession(): Promise<Session> {
   if (!supabase) throw new Error("Supabase environment variables are missing.");
   const existing = await supabase.auth.getSession();
   if (existing.error) throw existing.error;
@@ -23,4 +36,8 @@ export async function getOrCreateAnonymousSession(): Promise<Session> {
   if (anonymous.error) throw anonymous.error;
   if (!anonymous.data.session) throw new Error("Anonymous authentication did not return a session.");
   return anonymous.data.session;
+}
+
+export function clearCachedSession(): void {
+  sessionPromise = null;
 }

@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test tests/serverClock.test.mjs",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "typecheck": "tsc -b",
     "build": "tsc -b && vite build",
+    "check": "npm test && npm run build && npm --prefix worker run check",
     "preview": "vite preview",
     "worker:dev": "npm --prefix worker run dev",
     "worker:check": "npm --prefix worker run check"

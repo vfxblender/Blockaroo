@@ -3,6 +3,10 @@ import {
   decodeStateBatch,
   encodeMovementInput,
   normalizeDirection,
+  type CircleGame,
+  type CircleMode,
+  type CircleSignalData,
+  type NearbyMediaType,
   type NetworkPlayer,
   type PhotoGrantMessage,
   type ServerControlMessage,
@@ -37,6 +41,7 @@ const PHOTO_GRANT_TIMEOUT_MS = 8_000;
 
 export class WebSocketTownSquare implements TownSquareTransport {
   readonly mode = "world-socket" as const;
+  readonly supportsCircles = true;
   private socket: WebSocket | null = null;
   private _connectionId = "";
   private authUserId = "";
@@ -204,7 +209,8 @@ export class WebSocketTownSquare implements TownSquareTransport {
 
   async sendImage(profile: PlayerIdentity, imageDataUrl: string, x: number, y: number): Promise<BlockChatMessage | null> {
     if (this.socket?.readyState !== WebSocket.OPEN || !this.authUserId) return null;
-    const grant = await this.requestPhotoGrant();
+    const mediaType: NearbyMediaType = imageDataUrl.startsWith("data:image/gif;base64,") ? "gif" : "image";
+    const grant = await this.requestPhotoGrant(mediaType);
     await this.photos.upload(grant, imageDataUrl);
     this.sendJson({ type: "photo", mediaId: grant.mediaId });
     return {
@@ -217,6 +223,54 @@ export class WebSocketTownSquare implements TownSquareTransport {
       sentAt: Date.now(),
       durationMs: 12_000,
     };
+  }
+
+  inviteToCircle(targetPlayerId: string, mode: CircleMode): void {
+    this.sendJson({ type: "circle-invite", targetPlayerId, mode });
+  }
+
+  respondToCircleInvite(invitationId: string, accept: boolean): void {
+    this.sendJson({ type: "circle-invite-response", invitationId, accept });
+  }
+
+  requestToJoinCircle(circleId: string): void {
+    this.sendJson({ type: "circle-join-request", circleId });
+  }
+
+  respondToCircleRequest(requesterPlayerId: string, accept: boolean): void {
+    this.sendJson({ type: "circle-join-response", requesterPlayerId, accept });
+  }
+
+  leaveCircle(): void {
+    this.sendJson({ type: "circle-leave" });
+  }
+
+  setCircleMode(mode: CircleMode): void {
+    this.sendJson({ type: "circle-mode", mode });
+  }
+
+  kickFromCircle(targetPlayerId: string): void {
+    this.sendJson({ type: "circle-kick", targetPlayerId });
+  }
+
+  setCircleVoiceMuted(muted: boolean): void {
+    this.sendJson({ type: "circle-voice-state", muted });
+  }
+
+  sendCircleSignal(targetPlayerId: string, signal: CircleSignalData): void {
+    this.sendJson({ type: "circle-signal", targetPlayerId, signal });
+  }
+
+  startCircleGame(game: CircleGame): void {
+    this.sendJson({ type: "circle-game-start", game });
+  }
+
+  endCircleGame(): void {
+    this.sendJson({ type: "circle-game-end" });
+  }
+
+  sendCircleGameAction(action: string, payload?: unknown): void {
+    this.sendJson({ type: "circle-game-action", action, payload });
   }
 
   async disconnect(): Promise<void> {
@@ -276,6 +330,7 @@ export class WebSocketTownSquare implements TownSquareTransport {
     }
     if (message.type === "chat") {
       if (message.player.id === this.connectionId) return;
+      if (!this.callbacks.shouldReceiveFrom(message.player.authUserId)) return;
       const player = this.toOnlinePlayer(message.player);
       this.playersBySlot.set(player.slot, player);
       this.callbacks.onChat({
@@ -290,8 +345,9 @@ export class WebSocketTownSquare implements TownSquareTransport {
     }
     if (message.type === "photo") {
       if (message.player.id === this.connectionId) return;
+      if (!this.callbacks.shouldReceiveFrom(message.player.authUserId)) return;
       try {
-        const imageDataUrl = await this.photos.download(message.mediaId, message.downloadToken);
+        const imageDataUrl = await this.photos.download(message.mediaId, message.mediaType, message.downloadToken);
         const player = this.toOnlinePlayer(message.player);
         this.playersBySlot.set(player.slot, player);
         this.callbacks.onChat({
@@ -309,13 +365,37 @@ export class WebSocketTownSquare implements TownSquareTransport {
       }
       return;
     }
+    if (message.type === "circle-invite") {
+      this.callbacks.onCircleInvite(message);
+      return;
+    }
+    if (message.type === "circle-join-request") {
+      this.callbacks.onCircleJoinRequest(message);
+      return;
+    }
+    if (message.type === "circle-state") {
+      this.callbacks.onCircleState(message.circle);
+      return;
+    }
+    if (message.type === "circle-closed") {
+      this.callbacks.onCircleClosed(message.circleId, message.reason);
+      return;
+    }
+    if (message.type === "circle-signal") {
+      this.callbacks.onCircleSignal(message.fromPlayerId, message.signal);
+      return;
+    }
+    if (message.type === "circle-game-state") {
+      this.callbacks.onCircleGameState(message.circleId, message.snapshot);
+      return;
+    }
     if (message.type === "error") {
       if (message.code.startsWith("photo_")) this.rejectPendingPhotoGrant(new Error(message.message));
       this.callbacks.onNotice(message.message);
     }
   }
 
-  private requestPhotoGrant(): Promise<PhotoGrantMessage> {
+  private requestPhotoGrant(mediaType: NearbyMediaType): Promise<PhotoGrantMessage> {
     if (this.socket?.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error("The world socket is not connected."));
     }
@@ -330,7 +410,7 @@ export class WebSocketTownSquare implements TownSquareTransport {
         reject(new Error("The temporary photo upload permission timed out."));
       }, PHOTO_GRANT_TIMEOUT_MS);
       this.pendingPhotoGrant = { resolve, reject, timeout };
-      this.sendJson({ type: "photo-grant" });
+      this.sendJson({ type: "photo-grant", mediaType });
     });
   }
 

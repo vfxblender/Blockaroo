@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && wrangler deploy --dry-run",
+    "check": "npm test && npm run typecheck && wrangler deploy --dry-run",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {

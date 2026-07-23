@@ -1,4 +1,5 @@
 import type { RealtimeChannel } from "@supabase/supabase-js";
+import type { CircleGame, CircleMode, CircleSignalData } from "../../../shared/worldProtocol";
 import { getOrCreateAnonymousSession, supabase } from "../../services/supabase";
 import { WORLD } from "../config";
 import type { PlayerIdentity } from "../types/world";
@@ -13,6 +14,7 @@ const CHANNEL_NAME = "city:nashville:town-square";
 
 export class RealtimeTownSquare implements TownSquareTransport {
   readonly mode = "supabase-fallback" as const;
+  readonly supportsCircles = false;
   private _connectionId: string = crypto.randomUUID();
   private channel: RealtimeChannel | null = null;
   private authUserId = "";
@@ -76,7 +78,9 @@ export class RealtimeTownSquare implements TownSquareTransport {
           kind: rawMessage.kind === "image" ? "image" : "text",
           player: this.normalizePlayer(rawMessage.player),
         } satisfies BlockChatMessage;
-        if (message.player.id !== connectionId && this.isNearby(message.player)) this.callbacks.onChat(message);
+        if (message.player.id !== connectionId
+          && this.callbacks.shouldReceiveFrom(message.player.authUserId)
+          && this.isNearby(message.player)) this.callbacks.onChat(message);
       })
       .subscribe(async status => {
         if (generation !== this.generation) return;
@@ -152,6 +156,19 @@ export class RealtimeTownSquare implements TownSquareTransport {
     return null;
   }
 
+  inviteToCircle(_targetPlayerId: string, _mode: CircleMode): void { this.circleUnavailable(); }
+  respondToCircleInvite(_invitationId: string, _accept: boolean): void { this.circleUnavailable(); }
+  requestToJoinCircle(_circleId: string): void { this.circleUnavailable(); }
+  respondToCircleRequest(_requesterPlayerId: string, _accept: boolean): void { this.circleUnavailable(); }
+  leaveCircle(): void { this.circleUnavailable(); }
+  setCircleMode(_mode: CircleMode): void { this.circleUnavailable(); }
+  kickFromCircle(_targetPlayerId: string): void { this.circleUnavailable(); }
+  setCircleVoiceMuted(_muted: boolean): void { this.circleUnavailable(); }
+  sendCircleSignal(_targetPlayerId: string, _signal: CircleSignalData): void { this.circleUnavailable(); }
+  startCircleGame(_game: CircleGame): void { this.circleUnavailable(); }
+  endCircleGame(): void { this.circleUnavailable(); }
+  sendCircleGameAction(_action: string, _payload?: unknown): void { this.circleUnavailable(); }
+
   async disconnect(): Promise<void> {
     this.generation += 1;
     await this.removeCurrentChannel();
@@ -217,6 +234,12 @@ export class RealtimeTownSquare implements TownSquareTransport {
       sequence: typeof player.sequence === "number" ? player.sequence : 0,
       zone: player.zone === 2 ? 2 : 1,
       updatedAt: typeof player.updatedAt === "number" ? player.updatedAt : Date.now(),
+      ...(typeof player.circleId === "string" ? { circleId: player.circleId } : {}),
+      ...(player.circleMode === "open" || player.circleMode === "request" || player.circleMode === "invite"
+        ? { circleMode: player.circleMode }
+        : {}),
+      ...(typeof player.circleCount === "number" ? { circleCount: player.circleCount } : {}),
+      ...(typeof player.activity === "string" ? { activity: player.activity } : {}),
     };
   }
 
@@ -230,5 +253,9 @@ export class RealtimeTownSquare implements TownSquareTransport {
     } finally {
       await supabase.removeChannel(channel);
     }
+  }
+
+  private circleUnavailable(): void {
+    this.callbacks.onNotice("Circles need the Cloudflare world server.");
   }
 }

@@ -1,4 +1,4 @@
-export const WORLD_PROTOCOL_VERSION = 1;
+export const WORLD_PROTOCOL_VERSION = 2;
 
 export const MOVEMENT_SPEED = 220;
 export const DETAILED_PLAYER_LIMIT = 50;
@@ -27,6 +27,58 @@ export interface NetworkPlayer {
   sequence: number;
   updatedAt: number;
   zone: InterestZone;
+  circleId?: string;
+  circleMode?: CircleMode;
+  circleCount?: number;
+  activity?: string;
+}
+
+export type CircleMode = "open" | "request" | "invite";
+export type CircleGame = "cards" | "draw" | "bluff" | "square-off";
+export type NearbyMediaType = "image" | "gif";
+
+export interface CircleMember {
+  playerId: string;
+  authUserId: string;
+  username: string;
+  color: string;
+  isHost: boolean;
+  isMuted: boolean;
+}
+
+export interface CircleState {
+  id: string;
+  hostPlayerId: string;
+  mode: CircleMode;
+  members: CircleMember[];
+  game: CircleGame | null;
+  activity: string;
+  revision: number;
+  createdAt: number;
+}
+
+export interface RtcSessionDescriptionData {
+  type: "offer" | "answer" | "pranswer" | "rollback";
+  sdp?: string;
+}
+
+export interface RtcIceCandidateData {
+  candidate: string;
+  sdpMid?: string | null;
+  sdpMLineIndex?: number | null;
+  usernameFragment?: string | null;
+}
+
+export type CircleSignalData =
+  | { description: RtcSessionDescriptionData }
+  | { candidate: RtcIceCandidateData };
+
+export interface CircleGameSnapshot {
+  game: CircleGame;
+  phase: string;
+  revision: number;
+  publicState: Record<string, unknown>;
+  privateState?: Record<string, unknown>;
 }
 
 export interface HelloMessage {
@@ -51,6 +103,7 @@ export interface ChatMessage {
 
 export interface PhotoGrantRequestMessage {
   type: "photo-grant";
+  mediaType: NearbyMediaType;
 }
 
 export interface PhotoMessage {
@@ -63,13 +116,88 @@ export interface PingMessage {
   sentAt: number;
 }
 
+export interface CircleInviteMessage {
+  type: "circle-invite";
+  targetPlayerId: string;
+  mode: CircleMode;
+}
+
+export interface CircleInviteResponseMessage {
+  type: "circle-invite-response";
+  invitationId: string;
+  accept: boolean;
+}
+
+export interface CircleJoinRequestMessage {
+  type: "circle-join-request";
+  circleId: string;
+}
+
+export interface CircleJoinResponseMessage {
+  type: "circle-join-response";
+  requesterPlayerId: string;
+  accept: boolean;
+}
+
+export interface CircleLeaveMessage {
+  type: "circle-leave";
+}
+
+export interface CircleModeMessage {
+  type: "circle-mode";
+  mode: CircleMode;
+}
+
+export interface CircleKickMessage {
+  type: "circle-kick";
+  targetPlayerId: string;
+}
+
+export interface CircleVoiceStateMessage {
+  type: "circle-voice-state";
+  muted: boolean;
+}
+
+export interface CircleSignalMessage {
+  type: "circle-signal";
+  targetPlayerId: string;
+  signal: CircleSignalData;
+}
+
+export interface CircleGameStartMessage {
+  type: "circle-game-start";
+  game: CircleGame;
+}
+
+export interface CircleGameEndMessage {
+  type: "circle-game-end";
+}
+
+export interface CircleGameActionMessage {
+  type: "circle-game-action";
+  action: string;
+  payload?: unknown;
+}
+
 export type ClientControlMessage =
   | HelloMessage
   | ProfileMessage
   | ChatMessage
   | PhotoGrantRequestMessage
   | PhotoMessage
-  | PingMessage;
+  | PingMessage
+  | CircleInviteMessage
+  | CircleInviteResponseMessage
+  | CircleJoinRequestMessage
+  | CircleJoinResponseMessage
+  | CircleLeaveMessage
+  | CircleModeMessage
+  | CircleKickMessage
+  | CircleVoiceStateMessage
+  | CircleSignalMessage
+  | CircleGameStartMessage
+  | CircleGameEndMessage
+  | CircleGameActionMessage;
 
 export interface WelcomeMessage {
   type: "welcome";
@@ -117,6 +245,7 @@ export interface ServerPhotoMessage {
   id: string;
   player: NetworkPlayer;
   mediaId: string;
+  mediaType: NearbyMediaType;
   downloadToken: string;
   sentAt: number;
   durationMs: number;
@@ -125,6 +254,7 @@ export interface ServerPhotoMessage {
 export interface PhotoGrantMessage {
   type: "photo-grant";
   mediaId: string;
+  mediaType: NearbyMediaType;
   uploadToken: string;
   expiresAt: number;
 }
@@ -141,6 +271,44 @@ export interface ErrorMessage {
   message: string;
 }
 
+export interface ServerCircleInviteMessage {
+  type: "circle-invite";
+  invitationId: string;
+  fromPlayer: NetworkPlayer;
+  circleId: string | null;
+  mode: CircleMode;
+  expiresAt: number;
+}
+
+export interface ServerCircleJoinRequestMessage {
+  type: "circle-join-request";
+  requester: NetworkPlayer;
+  circleId: string;
+}
+
+export interface ServerCircleStateMessage {
+  type: "circle-state";
+  circle: CircleState;
+}
+
+export interface ServerCircleClosedMessage {
+  type: "circle-closed";
+  circleId: string;
+  reason: string;
+}
+
+export interface ServerCircleSignalMessage {
+  type: "circle-signal";
+  fromPlayerId: string;
+  signal: CircleSignalData;
+}
+
+export interface ServerCircleGameStateMessage {
+  type: "circle-game-state";
+  circleId: string;
+  snapshot: CircleGameSnapshot;
+}
+
 export type ServerControlMessage =
   | WelcomeMessage
   | EnterMessage
@@ -151,12 +319,18 @@ export type ServerControlMessage =
   | ServerPhotoMessage
   | PhotoGrantMessage
   | PongMessage
-  | ErrorMessage;
+  | ErrorMessage
+  | ServerCircleInviteMessage
+  | ServerCircleJoinRequestMessage
+  | ServerCircleStateMessage
+  | ServerCircleClosedMessage
+  | ServerCircleSignalMessage
+  | ServerCircleGameStateMessage;
 
-export enum BinaryMessageKind {
-  MovementInput = 1,
-  StateBatch = 2,
-}
+export const BinaryMessageKind = {
+  MovementInput: 1,
+  StateBatch: 2,
+} as const;
 
 export interface MovementInput {
   sequence: number;

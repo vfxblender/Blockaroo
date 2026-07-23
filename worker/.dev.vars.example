@@ -2,3 +2,8 @@
 # Generate a long random value; never commit the real secret.
 TICKET_SECRET="replace-with-at-least-32-random-characters"
 MEDIA_SECRET="replace-with-a-different-32-character-random-value"
+
+# Optional in local development. Without these, Circle voice uses direct
+# WebRTC plus Cloudflare STUN, but cannot relay through TURN.
+CLOUDFLARE_TURN_KEY_ID=""
+CLOUDFLARE_TURN_API_TOKEN=""

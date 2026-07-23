@@ -1,4 +1,13 @@
 import Phaser from "phaser";
+import type {
+  CircleGameSnapshot,
+  CircleState,
+  ServerCircleInviteMessage,
+  ServerCircleJoinRequestMessage,
+} from "../../../shared/worldProtocol";
+import { CircleVoice } from "../../circles/CircleVoice";
+import { SocialPortal } from "../../ui/SocialPortal";
+import { CircleExperience } from "../../ui/CircleExperience";
 import { PALETTE, WORLD } from "../config";
 import { loadProfile, saveProfile } from "../systems/LocalProfile";
 import { LOCAL_TOWN_NEIGHBORS, type LocalTownNeighbor } from "../systems/LocalTownNeighbors";
@@ -9,6 +18,7 @@ import type { PlayerIdentity } from "../types/world";
 
 type Remote = {
   body: Phaser.GameObjects.Container;
+  player: OnlinePlayer;
   target: Phaser.Math.Vector2;
   velocity: Phaser.Math.Vector2;
   updatedAt: number;
@@ -19,7 +29,9 @@ type LocalNeighborSprite = LocalTownNeighbor & { body: Phaser.GameObjects.Contai
 
 const MAX_IMAGE_INPUT_BYTES = 15 * 1024 * 1024;
 const MAX_IMAGE_DATA_URL_CHARS = 140_000;
-const SUPPORTED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const MAX_TEMPORARY_GIF_BYTES = 256 * 1024;
+const MAX_GIF_DATA_URL_CHARS = Math.ceil(MAX_TEMPORARY_GIF_BYTES * 4 / 3) + 64;
+const SUPPORTED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 
 export class TownSquareScene extends Phaser.Scene {
   private profile = loadProfile();
@@ -33,6 +45,7 @@ export class TownSquareScene extends Phaser.Scene {
   private localNeighbors: LocalNeighborSprite[] = [];
   private network: TownSquareTransport | null = null;
   private statusElement: HTMLElement | null = null;
+  private hudElement: HTMLElement | null = null;
   private onlineCount = 1;
   private connectionStatus: "connecting" | "online" | "offline" | "error" = "connecting";
   private reconnecting = false;
@@ -47,6 +60,15 @@ export class TownSquareScene extends Phaser.Scene {
   private composingChat = false;
   private localCorrection: Phaser.Math.Vector2 | null = null;
   private router = new WorldRouter();
+  private socialPortal: SocialPortal | null = null;
+  private circleExperience: CircleExperience | null = null;
+  private circleVoice: CircleVoice | null = null;
+  private activeCircle: CircleState | null = null;
+  private playerCard: HTMLElement | null = null;
+  private selectedRemoteId: string | null = null;
+  private emojiMenu: HTMLElement | null = null;
+  private mutedUserIds = new Set<string>(loadStoredIds("blockaroo.muted-users"));
+  private blockedUserIds = new Set<string>(loadStoredIds("blockaroo.blocked-users"));
 
   constructor() { super("TownSquare"); }
 
@@ -72,6 +94,7 @@ export class TownSquareScene extends Phaser.Scene {
     void this.startMultiplayer();
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
       this.closeChatComposer(true);
+      this.closePlayerCard();
       this.moveTarget = new Phaser.Math.Vector2(pointer.worldX, pointer.worldY);
     });
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -85,6 +108,11 @@ export class TownSquareScene extends Phaser.Scene {
       this.remotes.clear();
       for (const neighbor of this.localNeighbors) neighbor.body.destroy(true);
       this.localNeighbors = [];
+      void this.circleVoice?.leave();
+      this.circleExperience?.destroy();
+      this.socialPortal?.destroy();
+      this.hudElement?.remove();
+      this.hudElement = null;
     });
   }
 
@@ -92,13 +120,20 @@ export class TownSquareScene extends Phaser.Scene {
     const speed = 220;
     let x = 0; let y = 0;
     const isEditingText = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
-    if (!isEditingText) {
+    const interfaceExpanded = Boolean(this.socialPortal?.isOpen || this.circleExperience?.isOpen);
+    if (!isEditingText && !interfaceExpanded) {
       if (this.cursors.left.isDown || this.keys.A.isDown) x -= 1;
       if (this.cursors.right.isDown || this.keys.D.isDown) x += 1;
       if (this.cursors.up.isDown || this.keys.W.isDown) y -= 1;
       if (this.cursors.down.isDown || this.keys.S.isDown) y += 1;
     }
     x += this.joystick.x; y += this.joystick.y;
+    if (interfaceExpanded) {
+      x = 0;
+      y = 0;
+      this.moveTarget = null;
+      this.joystick.set(0);
+    }
     if (x !== 0 || y !== 0) {
       this.moveTarget = null;
     } else if (this.moveTarget) {
@@ -141,6 +176,7 @@ export class TownSquareScene extends Phaser.Scene {
       neighbor.body.setDepth(neighbor.body.y);
     }
     this.updateChatComposerPosition();
+    this.updatePlayerCardPosition();
   }
 
   private drawWorld(): void {
@@ -183,23 +219,62 @@ export class TownSquareScene extends Phaser.Scene {
     block.setData("baseColor", identity.color);
     block.setData("messageActive", false);
     block.setData("localGuide", localGuide);
+    const networkIdentity = "authUserId" in identity ? identity as OnlinePlayer : null;
+    block.setData("playerState", networkIdentity);
+    if (!local && networkIdentity) {
+      const activity = this.add.text(0, 31, networkIdentity.activity ?? "", {
+        fontFamily: "system-ui",
+        fontSize: "10px",
+        color: "#fff4c2",
+        stroke: "#17223a",
+        strokeThickness: 3,
+      }).setOrigin(.5).setVisible(Boolean(networkIdentity.activity));
+      block.add(activity);
+      if (networkIdentity.circleId) square.setStrokeStyle(5, 0xffd166, 1);
+    }
     if (local) {
       square.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
         event.stopPropagation();
         this.moveTarget = null;
+        this.closePlayerCard();
         this.openChatComposer();
       });
+      const portalBadge = this.add.circle(24, -21, 11, 0x0b1020, 1)
+        .setStrokeStyle(2, 0xffffff, 1)
+        .setInteractive({ useHandCursor: true });
+      const portalIcon = this.add.text(24, -21, "▦", {
+        fontFamily: "system-ui",
+        fontSize: "12px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      }).setOrigin(.5);
+      portalBadge.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
+        event.stopPropagation();
+        this.moveTarget = null;
+        this.closeChatComposer(true);
+        this.closePlayerCard();
+        this.openSocialPortal();
+      });
+      block.add([portalBadge, portalIcon]);
     } else {
       square.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
         event.stopPropagation();
         this.moveTarget = null;
         const currentName = (block.getAt(1) as Phaser.GameObjects.Text).text;
-        this.showBubble(
-          block.x,
-          block.y - 50,
-          block.getData("localGuide") ? `${currentName} is a local town guide.` : `${currentName} is online nearby.`,
-        );
+        if (block.getData("localGuide")) {
+          this.showBubble(block.x, block.y - 50, `${currentName} is a local town guide.`);
+          return;
+        }
+        const player = block.getData("playerState") as OnlinePlayer | null;
+        if (player) void this.openPlayerCard(player);
       });
+    }
+    if (local || networkIdentity) {
+      const circleAura = this.add.ellipse(0, 3, 72, 60, 0xffd166, 0)
+        .setStrokeStyle(3, 0xffd166, 0.9)
+        .setVisible(Boolean(networkIdentity?.circleId));
+      block.add(circleAura);
+      block.setData("circleAura", circleAura);
     }
     return block;
   }
@@ -207,14 +282,17 @@ export class TownSquareScene extends Phaser.Scene {
   private createHud(): void {
     const hud = document.createElement("section");
     hud.className = "hud";
-    hud.innerHTML = `<div class="topbar"><div class="brand">BLOCKAROO<small>Nashville · Town Square</small><span class="connection is-connecting">Connecting…</span></div><button class="edit">Your block</button></div><aside class="panel" hidden><h2>Your block</h2><label class="field">Display name<input maxlength="18" value="${this.escape(this.profile.username)}" /></label><label class="field">Block color<div class="swatches">${PALETTE.map(c => `<button class="swatch ${c === this.profile.color ? "selected" : ""}" aria-label="Choose color" style="background:${c}" data-color="${c}"></button>`).join("")}</div></label><button class="save">Enter Town Square</button></aside><form class="chat-composer" hidden><input maxlength="120" autocomplete="off" enterkeyhint="send" aria-label="Write a message" placeholder="Say something…" /><button type="button" class="photo-picker" aria-label="Add a temporary picture" title="Add a temporary picture"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7.5h3l1.4-2h5.2l1.4 2h1.5M4 7.5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h11.5M4 7.5h12.5M12.5 18H8a3.5 3.5 0 1 1 5.7-2.7M19 10v8m-4-4h8" /></svg></button><input class="photo-input" type="file" accept="image/jpeg,image/png,image/webp" hidden /></form><div class="hint">Click your block to speak · WASD / arrows · tap ground · joystick</div><div class="joystick" aria-label="Movement joystick"><span class="joystick-knob"></span></div>`;
+    hud.innerHTML = `<div class="topbar"><div class="brand">BLOCKAROO<small>Nashville · Town Square</small><span class="connection is-connecting">Connecting…</span></div><button class="edit">Your block</button></div><aside class="panel" hidden><h2>Your block</h2><label class="field">Display name<input maxlength="18" value="${this.escape(this.profile.username)}" /></label><label class="field">Block color<div class="swatches">${PALETTE.map(c => `<button class="swatch ${c === this.profile.color ? "selected" : ""}" aria-label="Choose color" style="background:${c}" data-color="${c}"></button>`).join("")}</div></label><button class="save">Enter Town Square</button></aside><form class="chat-composer" hidden><input maxlength="120" autocomplete="off" enterkeyhint="send" aria-label="Write a message" placeholder="Say something…" /><button type="button" class="emoji-picker-button" aria-label="Add emoji" title="Add emoji">☺</button><button type="button" class="photo-picker" aria-label="Add a temporary picture or GIF" title="Add a temporary picture or GIF"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7.5h3l1.4-2h5.2l1.4 2h1.5M4 7.5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h11.5M4 7.5h12.5M12.5 18H8a3.5 3.5 0 1 1 5.7-2.7M19 10v8m-4-4h8" /></svg></button><input class="photo-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden /></form><div class="emoji-menu" hidden>${["😀","😂","😍","🤔","😎","😭","🔥","👏","❤️","👋","🎉","💀"].map(emoji => `<button type="button" data-emoji="${emoji}">${emoji}</button>`).join("")}</div><aside class="player-card" hidden></aside><div class="hint">Tap your block to talk · Tap ▦ to open your world · Tap people to connect</div><div class="joystick" aria-label="Movement joystick"><span class="joystick-knob"></span></div>`;
     document.body.append(hud);
+    this.hudElement = hud;
     this.statusElement = hud.querySelector<HTMLElement>(".connection")!;
     const panel = hud.querySelector<HTMLElement>(".panel")!;
     this.profilePanel = panel;
     const nameInput = panel.querySelector<HTMLInputElement>("input")!;
     const keyboard = this.input.keyboard!;
     const isTextField = (target: EventTarget | null): boolean => target instanceof HTMLTextAreaElement
+      || target instanceof HTMLSelectElement
+      || (target instanceof HTMLElement && target.isContentEditable)
       || (target instanceof HTMLInputElement && !["button", "checkbox", "color", "file", "radio", "range", "submit"].includes(target.type));
     const pauseForText = () => {
       keyboard.resetKeys();
@@ -228,13 +306,22 @@ export class TownSquareScene extends Phaser.Scene {
       keyboard.enabled = true;
       keyboard.enableGlobalCapture();
     };
-    hud.addEventListener("focusin", event => {
+    const handleTextFocusIn = (event: FocusEvent) => {
       if (isTextField(event.target)) pauseForText();
-    });
-    hud.addEventListener("focusout", () => {
+    };
+    const handleTextFocusOut = () => {
       window.setTimeout(() => {
         if (!isTextField(document.activeElement)) resumeAfterText();
       }, 0);
+    };
+    // SocialPortal and CircleExperience live beside the HUD in document.body.
+    // Listening on document keeps WASD/arrow capture from eating characters in
+    // any composer, profile editor, select menu, or game guess field.
+    document.addEventListener("focusin", handleTextFocusIn);
+    document.addEventListener("focusout", handleTextFocusOut);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      document.removeEventListener("focusin", handleTextFocusIn);
+      document.removeEventListener("focusout", handleTextFocusOut);
     });
     hud.querySelector<HTMLButtonElement>(".edit")!.onclick = () => {
       this.closeChatComposer(true);
@@ -253,6 +340,7 @@ export class TownSquareScene extends Phaser.Scene {
         (this.player.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(Phaser.Display.Color.HexStringToColor(selected).color);
       }
       this.network?.updatePresence(this.profile, this.player.x, this.player.y);
+      this.socialPortal?.updateLocalIdentity(this.profile);
       nameInput.blur();
       panel.hidden = true;
     };
@@ -277,6 +365,86 @@ export class TownSquareScene extends Phaser.Scene {
     this.photoInput.addEventListener("change", () => {
       const file = this.photoInput?.files?.[0];
       if (file) void this.submitPhotoMessage(file);
+    });
+    this.emojiMenu = hud.querySelector<HTMLElement>(".emoji-menu")!;
+    const emojiButton = this.chatForm.querySelector<HTMLButtonElement>(".emoji-picker-button")!;
+    emojiButton.addEventListener("click", event => {
+      event.stopPropagation();
+      if (!this.emojiMenu) return;
+      this.emojiMenu.hidden = !this.emojiMenu.hidden;
+      this.updateChatComposerPosition();
+    });
+    this.emojiMenu.addEventListener("click", event => {
+      const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-emoji]");
+      if (!button?.dataset.emoji || !this.chatInput) return;
+      const start = this.chatInput.selectionStart ?? this.chatInput.value.length;
+      const end = this.chatInput.selectionEnd ?? start;
+      this.chatInput.setRangeText(button.dataset.emoji, start, end, "end");
+      this.emojiMenu!.hidden = true;
+      this.chatInput.focus();
+    });
+    this.playerCard = hud.querySelector<HTMLElement>(".player-card")!;
+    this.playerCard.addEventListener("click", event => void this.handlePlayerCardAction(event));
+
+    this.circleExperience = new CircleExperience({
+      onInviteResponse: (invitationId, accept) => this.network?.respondToCircleInvite(invitationId, accept),
+      onJoinResponse: (playerId, accept) => this.network?.respondToCircleRequest(playerId, accept),
+      onLeave: () => this.network?.leaveCircle(),
+      onMode: mode => this.network?.setCircleMode(mode),
+      onKick: playerId => this.network?.kickFromCircle(playerId),
+      // CircleVoice reports the resulting mute state through its
+      // onMutedChange callback, so one click produces one network update.
+      onMute: () => {
+        if (this.circleVoice?.canRetry) void this.circleVoice.retry();
+        else this.circleVoice?.toggleMuted();
+      },
+      onStartGame: game => this.network?.startCircleGame(game),
+      onEndGame: () => this.network?.endCircleGame(),
+      onGameAction: (action, payload) => this.network?.sendCircleGameAction(action, payload),
+      onAddFriend: async userId => {
+        if (!this.socialPortal) throw new Error("The social portal is still loading.");
+        return this.socialPortal.sendFriendRequest(userId);
+      },
+      onInteraction: () => this.circleVoice?.resumeAudio(),
+      onOpenChange: open => {
+        if (open) {
+          this.socialPortal?.close();
+          this.closeChatComposer(true);
+          this.closePlayerCard();
+        }
+      },
+    });
+    const worldEndpoint = (import.meta.env.VITE_WORLD_SOCKET_URL as string | undefined)?.trim() ?? "";
+    this.circleVoice = new CircleVoice(
+      worldEndpoint,
+      (targetPlayerId, signal) => this.network?.sendCircleSignal(targetPlayerId, signal),
+      (status, detail) => this.circleExperience?.setVoiceStatus(status, detail),
+      muted => this.network?.setCircleVoiceMuted(muted),
+    );
+    this.socialPortal = new SocialPortal(this.profile, {
+      onIdentityChange: socialProfile => {
+        this.applyProfileIdentity(socialProfile.displayName, socialProfile.blockColor);
+      },
+      onConnectToFriend: userId => this.connectToFriend(userId),
+      onOpenChange: open => {
+        if (open) {
+          this.circleExperience?.hide();
+          this.closeChatComposer(true);
+          this.closePlayerCard();
+        }
+      },
+      onNotice: message => this.showUiNotice(message),
+      onAccountReady: () => void this.reconnectMultiplayer(true),
+      onBlockedUsersChange: userIds => {
+        this.blockedUserIds = new Set(userIds);
+        storeIds("blockaroo.blocked-users", this.blockedUserIds);
+        for (const remote of this.remotes.values()) {
+          remote.body.setVisible(remote.zone === 1 && !this.blockedUserIds.has(remote.player.authUserId));
+        }
+        if (this.activeCircle?.members.some(member => this.blockedUserIds.has(member.authUserId))) {
+          this.network?.leaveCircle();
+        }
+      },
     });
     const stick = hud.querySelector<HTMLElement>(".joystick")!;
     const knob = stick.querySelector<HTMLElement>(".joystick-knob")!;
@@ -311,7 +479,6 @@ export class TownSquareScene extends Phaser.Scene {
       window.removeEventListener("pointerup", stopJoystick);
       window.removeEventListener("pointercancel", stopJoystick);
     });
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => hud.remove());
   }
 
   private async startMultiplayer(): Promise<void> {
@@ -322,7 +489,14 @@ export class TownSquareScene extends Phaser.Scene {
       onChat: message => this.receiveChatMessage(message),
       onCount: count => this.setOnlineCount(count),
       onStatus: status => this.setConnectionStatus(status),
-      onNotice: message => this.showBubble(this.player.x, this.player.y - 55, message),
+      onNotice: message => this.showUiNotice(message),
+      shouldReceiveFrom: authUserId => !this.blockedUserIds.has(authUserId) && !this.mutedUserIds.has(authUserId),
+      onCircleInvite: message => this.receiveCircleInvite(message),
+      onCircleJoinRequest: message => this.receiveCircleJoinRequest(message),
+      onCircleState: circle => this.receiveCircleState(circle),
+      onCircleClosed: (circleId, reason) => this.closeCircle(circleId, reason),
+      onCircleSignal: (fromPlayerId, signal) => void this.circleVoice?.handleSignal(fromPlayerId, signal),
+      onCircleGameState: (circleId, snapshot) => this.receiveCircleGameState(circleId, snapshot),
     });
 
     document.addEventListener("visibilitychange", this.handleVisibilityChange);
@@ -393,34 +567,42 @@ export class TownSquareScene extends Phaser.Scene {
       existing.target.set(player.x, player.y);
       existing.velocity.set(player.velocityX, player.velocityY);
       existing.zone = player.zone;
-      existing.body.setVisible(player.zone === 1);
+      existing.player = player;
+      existing.body.setVisible(player.zone === 1 && !this.blockedUserIds.has(player.authUserId));
       existing.body.setData("baseColor", player.color);
+      existing.body.setData("playerState", player);
       if (!existing.body.getData("messageActive")) {
         (existing.body.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(Phaser.Display.Color.HexStringToColor(player.color).color);
       }
+      (existing.body.getAt(0) as Phaser.GameObjects.Rectangle).setStrokeStyle(player.circleId ? 5 : 3, player.circleId ? 0xffd166 : 0x0b1020, 1);
       (existing.body.getAt(1) as Phaser.GameObjects.Text).setText(player.username);
+      const activity = existing.body.getAt(2);
+      if (activity instanceof Phaser.GameObjects.Text) activity.setText(player.activity ?? "").setVisible(Boolean(player.activity));
+      const circleAura = existing.body.getData("circleAura") as Phaser.GameObjects.Ellipse | undefined;
+      circleAura?.setVisible(Boolean(player.circleId));
       return;
     }
 
     const body = this.makePlayer(player, player.x, player.y);
     this.remotes.set(player.id, {
       body,
+      player,
       target: new Phaser.Math.Vector2(player.x, player.y),
       velocity: new Phaser.Math.Vector2(player.velocityX, player.velocityY),
       updatedAt: player.updatedAt,
       zone: player.zone,
     });
-    body.setVisible(player.zone === 1);
+    body.setVisible(player.zone === 1 && !this.blockedUserIds.has(player.authUserId));
   }
 
-  private openChatComposer(): void {
+  private openChatComposer(initialText = ""): void {
     if (!this.chatForm || !this.chatInput) return;
     this.photoPrepareGeneration += 1;
     this.clearBlockMessage(this.player);
     this.composingChat = true;
     if (this.profilePanel) this.profilePanel.hidden = true;
     (this.player.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(0xffffff);
-    this.chatInput.value = "";
+    this.chatInput.value = initialText.slice(0, 120);
     if (this.photoInput) this.photoInput.value = "";
     this.setPhotoPreparing(false);
     this.chatForm.hidden = false;
@@ -433,6 +615,7 @@ export class TownSquareScene extends Phaser.Scene {
     this.photoPrepareGeneration += 1;
     this.composingChat = false;
     if (this.chatForm) this.chatForm.hidden = true;
+    if (this.emojiMenu) this.emojiMenu.hidden = true;
     if (this.photoInput) this.photoInput.value = "";
     this.setPhotoPreparing(false);
     this.chatInput?.blur();
@@ -456,14 +639,30 @@ export class TownSquareScene extends Phaser.Scene {
     }
 
     const message = this.network?.sendChat(this.profile, text, this.player.x, this.player.y);
+    if (!message) {
+      this.closeChatComposer(true);
+      this.showBubble(this.player.x, this.player.y - 55, "That message was not sent. Reconnect and try again.");
+      return;
+    }
     this.closeChatComposer(false);
-    this.showBlockMessage(this.player, text, message?.durationMs ?? 12_000);
+    this.showBlockMessage(this.player, text, message.durationMs);
   }
 
   private async submitPhotoMessage(file: File): Promise<void> {
     if (!this.composingChat) return;
+    if (this.socialPortal?.accountIsAnonymous()) {
+      this.showUiNotice("Create your account before sharing pictures.");
+      this.closeChatComposer(true);
+      this.openSocialPortal();
+      return;
+    }
     if (!SUPPORTED_IMAGE_TYPES.has(file.type)) {
-      this.showBubble(this.player.x, this.player.y - 55, "Choose a JPEG, PNG, or WebP picture.");
+      this.showBubble(this.player.x, this.player.y - 55, "Choose a JPEG, PNG, WebP, or GIF.");
+      if (this.photoInput) this.photoInput.value = "";
+      return;
+    }
+    if (file.type === "image/gif" && file.size > MAX_TEMPORARY_GIF_BYTES) {
+      this.showBubble(this.player.x, this.player.y - 55, "Nearby GIFs must be 256 KB or smaller.");
       if (this.photoInput) this.photoInput.value = "";
       return;
     }
@@ -476,12 +675,18 @@ export class TownSquareScene extends Phaser.Scene {
     const generation = ++this.photoPrepareGeneration;
     this.setPhotoPreparing(true);
     try {
-      const imageDataUrl = await this.prepareTemporaryImage(file);
+      const imageDataUrl = file.type === "image/gif"
+        ? await this.prepareTemporaryGif(file)
+        : await this.prepareTemporaryImage(file);
       if (generation !== this.photoPrepareGeneration || !this.composingChat) return;
       const message = await this.network?.sendImage(this.profile, imageDataUrl, this.player.x, this.player.y);
-      const messageId = message?.id ?? crypto.randomUUID();
+      if (!message) {
+        this.showBubble(this.player.x, this.player.y - 55, "That picture was not sent. Reconnect and try again.");
+        this.setPhotoPreparing(false);
+        return;
+      }
       this.closeChatComposer(false);
-      this.showBlockPhoto(this.player, imageDataUrl, messageId, message?.durationMs ?? 12_000);
+      this.showBlockPhoto(this.player, imageDataUrl, message.id, message.durationMs);
     } catch (error) {
       console.error("Blockaroo could not prepare the picture", error);
       if (generation === this.photoPrepareGeneration) {
@@ -494,6 +699,7 @@ export class TownSquareScene extends Phaser.Scene {
   }
 
   private receiveChatMessage(message: BlockChatMessage): void {
+    if (this.mutedUserIds.has(message.player.authUserId) || this.blockedUserIds.has(message.player.authUserId)) return;
     const remaining = message.durationMs - (Date.now() - message.sentAt);
     if (remaining <= 0) return;
     this.upsertRemote(message.player);
@@ -677,9 +883,39 @@ export class TownSquareScene extends Phaser.Scene {
     throw new Error("The compressed picture is still too large for temporary chat.");
   }
 
+  private async prepareTemporaryGif(file: File): Promise<string> {
+    if (file.size <= 10 || file.size > MAX_TEMPORARY_GIF_BYTES) throw new Error("The GIF size is invalid.");
+    const bytes = new Uint8Array(await file.slice(0, 10).arrayBuffer());
+    const header = String.fromCharCode(...bytes.slice(0, 6));
+    const width = bytes[6] | (bytes[7] << 8);
+    const height = bytes[8] | (bytes[9] << 8);
+    if (!["GIF87a", "GIF89a"].includes(header)
+      || !width
+      || !height
+      || width > 1_024
+      || height > 1_024) {
+      throw new Error("Choose a valid GIF no larger than 1024×1024.");
+    }
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.addEventListener("load", () => {
+        if (typeof reader.result === "string"
+          && reader.result.startsWith("data:image/gif;base64,")
+          && reader.result.length <= MAX_GIF_DATA_URL_CHARS) {
+          resolve(reader.result);
+        } else {
+          reject(new Error("The GIF could not be prepared."));
+        }
+      }, { once: true });
+      reader.addEventListener("error", () => reject(reader.error || new Error("The GIF could not be read.")), { once: true });
+      reader.readAsDataURL(file);
+    });
+  }
+
   private isSafeTemporaryImage(value: unknown): value is string {
     if (typeof value !== "string") return false;
     if (value.length <= MAX_IMAGE_DATA_URL_CHARS && value.startsWith("data:image/jpeg;base64,")) return true;
+    if (value.length <= MAX_GIF_DATA_URL_CHARS && value.startsWith("data:image/gif;base64,")) return true;
     if (value.length > 4096) return false;
     try {
       const imageUrl = new URL(value);
@@ -717,6 +953,325 @@ export class TownSquareScene extends Phaser.Scene {
     const horizontalMargin = (this.chatForm.offsetWidth / 2) + 8;
     this.chatForm.style.left = `${Phaser.Math.Clamp(screenX, horizontalMargin, this.scale.width - horizontalMargin)}px`;
     this.chatForm.style.top = `${Phaser.Math.Clamp(screenY - 72, 70, this.scale.height - 90)}px`;
+    if (this.emojiMenu && !this.emojiMenu.hidden) {
+      const composerLeft = Number.parseFloat(this.chatForm.style.left);
+      const composerTop = Number.parseFloat(this.chatForm.style.top);
+      this.emojiMenu.style.left = `${Phaser.Math.Clamp(composerLeft, 90, this.scale.width - 90)}px`;
+      this.emojiMenu.style.top = `${Math.max(8, composerTop - 62)}px`;
+    }
+  }
+
+  private openSocialPortal(): void {
+    if (!this.socialPortal) return;
+    const rect = this.screenRectFor(this.player);
+    this.socialPortal.open(rect, this.profile.color);
+  }
+
+  private async openPlayerCard(player: OnlinePlayer): Promise<void> {
+    if (!this.playerCard || this.blockedUserIds.has(player.authUserId)) return;
+    this.closeChatComposer(true);
+    this.selectedRemoteId = player.id;
+    this.renderPlayerCard(player, "loading");
+    this.playerCard.hidden = false;
+    this.updatePlayerCardPosition();
+    let relationship: "pending-incoming" | "pending-outgoing" | "accepted" | "none" | "blocked" = "none";
+    try {
+      relationship = await this.socialPortal?.relationship(player.authUserId) ?? "none";
+    } catch {
+      relationship = "none";
+    }
+    if (this.selectedRemoteId !== player.id) return;
+    const latest = this.remotes.get(player.id)?.player ?? player;
+    this.renderPlayerCard(latest, relationship);
+  }
+
+  private renderPlayerCard(
+    player: OnlinePlayer,
+    relationship: "pending-incoming" | "pending-outgoing" | "accepted" | "none" | "blocked" | "loading",
+  ): void {
+    if (!this.playerCard) return;
+    const circlesAvailable = this.network?.supportsCircles === true;
+    const circleLabel = !circlesAvailable
+      ? "Circles unavailable"
+      : player.circleId
+      ? this.activeCircle?.id === player.circleId
+        ? "In your Circle"
+        : (player.circleCount ?? 0) >= 6
+          ? "Circle full"
+          : player.activity?.startsWith("Playing ")
+            ? "Game in progress"
+            : player.circleMode === "open"
+              ? "Join Circle"
+              : player.circleMode === "request"
+                ? "Ask to join"
+                : "Invite only"
+      : "Invite to Circle";
+    const friendLabel = relationship === "accepted"
+      ? "Friends"
+      : relationship === "pending-incoming"
+        ? "Accept request"
+        : relationship === "pending-outgoing"
+          ? "Request sent"
+          : relationship === "loading"
+            ? "Checking…"
+            : "Add friend";
+    const friendDisabled = relationship === "accepted" || relationship === "pending-outgoing" || relationship === "loading";
+    const circleDisabled = !circlesAvailable || (Boolean(player.circleId) && (
+      player.circleMode === "invite"
+        || this.activeCircle?.id === player.circleId
+        || (player.circleCount ?? 0) >= 6
+        || player.activity?.startsWith("Playing ")
+    ));
+    const muted = this.mutedUserIds.has(player.authUserId);
+    this.playerCard.innerHTML = `
+      <button class="player-card-close" data-player-action="close" aria-label="Close">×</button>
+      <div class="player-card-head">
+        <i style="--player-color:${this.escape(player.color)}"></i>
+        <div><strong>${this.escape(player.username)}</strong><small>${this.escape(player.activity ?? "Nearby in Town Square")}</small></div>
+      </div>
+      <div class="player-card-primary">
+        <button data-player-action="talk">Talk nearby</button>
+        <button data-player-action="circle" ${circleDisabled ? "disabled" : ""}>${circleLabel}</button>
+      </div>
+      <div class="player-card-secondary">
+        <button data-player-action="friend" ${friendDisabled ? "disabled" : ""}>${friendLabel}</button>
+        <button data-player-action="home">View Block Home</button>
+        <button data-player-action="mute">${muted ? "Unmute" : "Mute"}</button>
+        <button data-player-action="report">Report</button>
+        <button class="danger-text-button" data-player-action="block">Block</button>
+      </div>
+    `;
+  }
+
+  private async handlePlayerCardAction(event: Event): Promise<void> {
+    const target = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-player-action]");
+    if (!target?.dataset.playerAction || !this.selectedRemoteId) return;
+    const remote = this.remotes.get(this.selectedRemoteId);
+    const player = remote?.player;
+    if (!player) return this.closePlayerCard();
+    const action = target.dataset.playerAction;
+    if (action === "close") return this.closePlayerCard();
+    if (action === "talk") {
+      this.closePlayerCard();
+      this.openChatComposer(`@${player.username} `);
+      return;
+    }
+    if (action === "circle") {
+      if (!this.network?.supportsCircles) {
+        this.showUiNotice("Circles need the Cloudflare world server. Nearby text still works.");
+        return;
+      }
+      if (this.socialPortal?.accountIsAnonymous()) {
+        this.showUiNotice("Create your account before using private Circle voice and games.");
+        this.closePlayerCard();
+        this.openSocialPortal();
+        return;
+      }
+      if (player.circleId) this.network?.requestToJoinCircle(player.circleId);
+      else this.network?.inviteToCircle(player.id, "request");
+      this.closePlayerCard();
+      return;
+    }
+    if (action === "friend") {
+      if (this.socialPortal?.accountIsAnonymous()) {
+        this.closePlayerCard();
+        this.openSocialPortal();
+        return;
+      }
+      try {
+        const relationship = await this.socialPortal?.relationship(player.authUserId);
+        if (relationship === "pending-incoming") {
+          await this.socialPortal!.acceptFriendRequest(player.authUserId);
+          this.showUiNotice(`You and ${player.username} are now friends.`);
+        } else {
+          this.showUiNotice(await this.socialPortal!.sendFriendRequest(player.authUserId));
+        }
+      } catch (error) {
+        this.showUiNotice(error instanceof Error ? error.message : "Friend request failed.");
+      }
+      this.closePlayerCard();
+      return;
+    }
+    if (action === "home") {
+      if (this.socialPortal?.accountIsAnonymous()) {
+        this.closePlayerCard();
+        this.openSocialPortal();
+        return;
+      }
+      try {
+        const access = await this.socialPortal?.requestHomeAccess(player.authUserId);
+        if (access === "knocked") {
+          this.showUiNotice("Knock sent. You can enter after your friend lets you in.");
+          this.closePlayerCard();
+          return;
+        }
+        const rect = this.screenRectFor(remote.body);
+        this.closePlayerCard();
+        this.socialPortal?.openHome(player.authUserId, rect, player.color);
+      } catch (error) {
+        this.showUiNotice(error instanceof Error ? error.message : "That Block Home is unavailable.");
+      }
+      return;
+    }
+    if (action === "mute") {
+      const muted = !this.mutedUserIds.has(player.authUserId);
+      if (muted) this.mutedUserIds.add(player.authUserId);
+      else this.mutedUserIds.delete(player.authUserId);
+      storeIds("blockaroo.muted-users", this.mutedUserIds);
+      this.circleVoice?.setPeerMuted(player.id, muted);
+      this.showUiNotice(`${player.username} ${muted ? "muted" : "unmuted"}.`);
+      this.renderPlayerCard(player, await this.socialPortal?.relationship(player.authUserId) ?? "none");
+      return;
+    }
+    if (action === "report") {
+      if (this.socialPortal?.accountIsAnonymous()) {
+        this.showUiNotice("Create an account so reports can be reviewed and followed up.");
+        return;
+      }
+      const details = window.prompt(`Briefly describe what ${player.username} did.`);
+      if (!details?.trim()) return;
+      try {
+        await this.socialPortal?.reportUser(player.authUserId, "other", details);
+        this.showUiNotice("Report submitted. Thank you.");
+      } catch (error) {
+        this.showUiNotice(error instanceof Error ? error.message : "Report failed.");
+      }
+      this.closePlayerCard();
+      return;
+    }
+    if (action === "block") {
+      if (!window.confirm(`Block ${player.username}? Their nearby posts and voice will be hidden.`)) return;
+      try {
+        await this.socialPortal?.blockUser(player.authUserId);
+      } catch (error) {
+        if (!this.socialPortal?.accountIsAnonymous()) {
+          this.showUiNotice(error instanceof Error ? error.message : "Block failed.");
+          return;
+        }
+      }
+      this.blockedUserIds.add(player.authUserId);
+      this.mutedUserIds.add(player.authUserId);
+      storeIds("blockaroo.blocked-users", this.blockedUserIds);
+      storeIds("blockaroo.muted-users", this.mutedUserIds);
+      remote.body.setVisible(false);
+      this.circleVoice?.setPeerMuted(player.id, true);
+      if (this.activeCircle?.members.some(member => member.authUserId === player.authUserId)) {
+        this.network?.leaveCircle();
+      }
+      this.closePlayerCard();
+      this.showUiNotice(`${player.username} blocked.`);
+    }
+  }
+
+  private closePlayerCard(): void {
+    this.selectedRemoteId = null;
+    if (this.playerCard) this.playerCard.hidden = true;
+  }
+
+  private updatePlayerCardPosition(): void {
+    if (!this.playerCard || this.playerCard.hidden || !this.selectedRemoteId) return;
+    const remote = this.remotes.get(this.selectedRemoteId);
+    if (!remote || !remote.body.visible) return this.closePlayerCard();
+    const rect = this.screenRectFor(remote.body);
+    const width = this.playerCard.offsetWidth || 280;
+    const left = Phaser.Math.Clamp(rect.left + rect.width / 2, width / 2 + 10, this.scale.width - width / 2 - 10);
+    const top = Phaser.Math.Clamp(rect.top - 14, 170, this.scale.height - 12);
+    this.playerCard.style.left = `${left}px`;
+    this.playerCard.style.top = `${top}px`;
+  }
+
+  private screenRectFor(block: Phaser.GameObjects.Container): DOMRect {
+    const camera = this.cameras.main;
+    const screenX = (block.x - camera.worldView.x) * camera.zoom + camera.x;
+    const screenY = (block.y - camera.worldView.y) * camera.zoom + camera.y;
+    const size = 42 * camera.zoom;
+    return new DOMRect(screenX - size / 2, screenY - size / 2, size, size);
+  }
+
+  private applyProfileIdentity(username: string, color: string): void {
+    this.profile = { ...this.profile, username: username.slice(0, 18) || "New Neighbor", color };
+    saveProfile(this.profile);
+    this.nameLabel.setText(this.profile.username);
+    this.player.setData("baseColor", color);
+    if (!this.player.getData("messageActive") && !this.composingChat) {
+      (this.player.getAt(0) as Phaser.GameObjects.Rectangle)
+        .setFillStyle(Phaser.Display.Color.HexStringToColor(color).color);
+    }
+    this.network?.updatePresence(this.profile, this.player.x, this.player.y);
+    this.socialPortal?.updateLocalIdentity(this.profile);
+  }
+
+  private connectToFriend(userId: string): void {
+    if (!this.network?.supportsCircles) {
+      this.showUiNotice("Circles need the Cloudflare world server. Nearby text still works.");
+      return;
+    }
+    const remote = [...this.remotes.values()].find(candidate => candidate.player.authUserId === userId);
+    if (!remote) {
+      this.showUiNotice("That friend is not nearby in Town Square right now.");
+      return;
+    }
+    const player = remote.player;
+    if (player.circleId) {
+      if (player.circleMode === "invite") {
+        this.showUiNotice("That Circle is invite only.");
+      } else {
+        this.network?.requestToJoinCircle(player.circleId);
+      }
+    } else {
+      this.network?.inviteToCircle(player.id, "request");
+    }
+  }
+
+  private receiveCircleInvite(message: ServerCircleInviteMessage): void {
+    if (this.blockedUserIds.has(message.fromPlayer.authUserId)) return;
+    this.circleExperience?.showInvite(message);
+  }
+
+  private receiveCircleJoinRequest(message: ServerCircleJoinRequestMessage): void {
+    if (this.blockedUserIds.has(message.requester.authUserId)) return;
+    this.circleExperience?.showJoinRequest(message);
+  }
+
+  private receiveCircleState(circle: CircleState): void {
+    this.activeCircle = circle;
+    const square = this.player.getAt(0) as Phaser.GameObjects.Rectangle;
+    square.setStrokeStyle(5, 0xffd166, 1);
+    (this.player.getData("circleAura") as Phaser.GameObjects.Ellipse | undefined)?.setVisible(true);
+    this.circleExperience?.setAvatarOrigin(this.screenRectFor(this.player), this.profile.color);
+    this.circleExperience?.setCircle(circle, this.network?.connectionId ?? this.profile.id);
+    void this.startCircleVoice(circle);
+  }
+
+  private async startCircleVoice(circle: CircleState): Promise<void> {
+    const localPlayerId = this.network?.connectionId ?? this.profile.id;
+    await this.circleVoice?.join(circle, localPlayerId);
+    for (const member of circle.members) {
+      if (this.mutedUserIds.has(member.authUserId)) this.circleVoice?.setPeerMuted(member.playerId, true);
+    }
+  }
+
+  private closeCircle(circleId: string, reason: string): void {
+    if (this.activeCircle?.id !== circleId) return;
+    const formerCircle = this.activeCircle;
+    this.activeCircle = null;
+    (this.player.getAt(0) as Phaser.GameObjects.Rectangle).setStrokeStyle(3, 0x0b1020, 1);
+    (this.player.getData("circleAura") as Phaser.GameObjects.Ellipse | undefined)?.setVisible(false);
+    void this.circleVoice?.leave();
+    this.circleExperience?.clearCircle(reason);
+    this.circleExperience?.showConnectionRecap(
+      formerCircle.members.filter(member => !this.blockedUserIds.has(member.authUserId)),
+      this.network?.connectionId ?? this.profile.id,
+    );
+  }
+
+  private receiveCircleGameState(circleId: string, snapshot: CircleGameSnapshot): void {
+    if (this.activeCircle?.id !== circleId) return;
+    this.circleExperience?.setGameSnapshot(snapshot);
+  }
+
+  private showUiNotice(message: string): void {
+    this.circleExperience?.toast("Blockaroo", message);
   }
 
   private setConnectionStatus(status: "connecting" | "online" | "offline" | "error"): void {
@@ -740,4 +1295,17 @@ export class TownSquareScene extends Phaser.Scene {
   }
 
   private escape(value: string): string { return value.replace(/[&<>"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]!); }
+}
+
+function loadStoredIds(key: string): string[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) ?? "[]") as unknown;
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function storeIds(key: string, ids: Set<string>): void {
+  localStorage.setItem(key, JSON.stringify([...ids]));
 }
