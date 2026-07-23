@@ -67,6 +67,8 @@ export class TownSquareScene extends Phaser.Scene {
   private playerCard: HTMLElement | null = null;
   private selectedRemoteId: string | null = null;
   private emojiMenu: HTMLElement | null = null;
+  private portalButton: Phaser.GameObjects.Arc | null = null;
+  private portalIcon: Phaser.GameObjects.Graphics | null = null;
   private mutedUserIds = new Set<string>(loadStoredIds("blockaroo.muted-users"));
   private blockedUserIds = new Set<string>(loadStoredIds("blockaroo.blocked-users"));
 
@@ -239,23 +241,30 @@ export class TownSquareScene extends Phaser.Scene {
         this.closePlayerCard();
         this.openChatComposer();
       });
-      const portalBadge = this.add.circle(24, -21, 11, 0x0b1020, 1)
+      const portalButton = this.add.circle(0, 0, 15, 0x0b1020, 0.96)
         .setStrokeStyle(2, 0xffffff, 1)
         .setInteractive({ useHandCursor: true });
-      const portalIcon = this.add.text(24, -21, "▦", {
-        fontFamily: "system-ui",
-        fontSize: "12px",
-        color: "#ffffff",
-        fontStyle: "bold",
-      }).setOrigin(.5);
-      portalBadge.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
+      const portalIcon = this.add.graphics();
+      portalIcon.lineStyle(2, 0xffffff, 1);
+      portalIcon.beginPath();
+      portalIcon.moveTo(-8, -1);
+      portalIcon.lineTo(0, -8);
+      portalIcon.lineTo(8, -1);
+      portalIcon.strokePath();
+      portalIcon.strokeRect(-6, -1, 12, 9);
+      portalIcon.strokeRect(-2, 3, 4, 5);
+      portalButton.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
         event.stopPropagation();
         this.moveTarget = null;
         this.closeChatComposer(true);
         this.closePlayerCard();
         this.openSocialPortal();
       });
-      block.add([portalBadge, portalIcon]);
+      portalButton.disableInteractive().setVisible(false);
+      portalIcon.setVisible(false);
+      this.portalButton = portalButton;
+      this.portalIcon = portalIcon;
+      block.add([portalButton, portalIcon]);
     } else {
       square.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
         event.stopPropagation();
@@ -282,7 +291,7 @@ export class TownSquareScene extends Phaser.Scene {
   private createHud(): void {
     const hud = document.createElement("section");
     hud.className = "hud";
-    hud.innerHTML = `<div class="topbar"><div class="brand">BLOCKAROO<small>Nashville · Town Square</small><span class="connection is-connecting">Connecting…</span></div><button class="edit">Your block</button></div><aside class="panel" hidden><h2>Your block</h2><label class="field">Display name<input maxlength="18" value="${this.escape(this.profile.username)}" /></label><label class="field">Block color<div class="swatches">${PALETTE.map(c => `<button class="swatch ${c === this.profile.color ? "selected" : ""}" aria-label="Choose color" style="background:${c}" data-color="${c}"></button>`).join("")}</div></label><button class="save">Enter Town Square</button></aside><form class="chat-composer" hidden><input maxlength="120" autocomplete="off" enterkeyhint="send" aria-label="Write a message" placeholder="Say something…" /><button type="button" class="emoji-picker-button" aria-label="Add emoji" title="Add emoji">☺</button><button type="button" class="photo-picker" aria-label="Add a temporary picture or GIF" title="Add a temporary picture or GIF"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7.5h3l1.4-2h5.2l1.4 2h1.5M4 7.5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h11.5M4 7.5h12.5M12.5 18H8a3.5 3.5 0 1 1 5.7-2.7M19 10v8m-4-4h8" /></svg></button><input class="photo-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden /></form><div class="emoji-menu" hidden>${["😀","😂","😍","🤔","😎","😭","🔥","👏","❤️","👋","🎉","💀"].map(emoji => `<button type="button" data-emoji="${emoji}">${emoji}</button>`).join("")}</div><aside class="player-card" hidden></aside><div class="hint">Tap your block to talk · Tap ▦ to open your world · Tap people to connect</div><div class="joystick" aria-label="Movement joystick"><span class="joystick-knob"></span></div>`;
+    hud.innerHTML = `<div class="topbar"><div class="brand">BLOCKAROO<small>Nashville · Town Square</small><span class="connection is-connecting">Connecting…</span></div><button class="edit">Your block</button></div><aside class="panel" hidden><h2>Your block</h2><label class="field">Display name<input maxlength="18" value="${this.escape(this.profile.username)}" /></label><label class="field">Block color<div class="swatches">${PALETTE.map(c => `<button class="swatch ${c === this.profile.color ? "selected" : ""}" aria-label="Choose color" style="background:${c}" data-color="${c}"></button>`).join("")}</div></label><button class="save">Enter Town Square</button></aside><form class="chat-composer" hidden><input maxlength="120" autocomplete="off" enterkeyhint="send" aria-label="Write a message" placeholder="Say something…" /><button type="button" class="emoji-picker-button" aria-label="Add emoji" title="Add emoji">☺</button><button type="button" class="photo-picker" aria-label="Add a temporary picture or GIF" title="Add a temporary picture or GIF"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7.5h3l1.4-2h5.2l1.4 2h1.5M4 7.5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h11.5M4 7.5h12.5M12.5 18H8a3.5 3.5 0 1 1 5.7-2.7M19 10v8m-4-4h8" /></svg></button><input class="photo-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden /></form><div class="emoji-menu" hidden>${["😀","😂","😍","🤔","😎","😭","🔥","👏","❤️","👋","🎉","💀"].map(emoji => `<button type="button" data-emoji="${emoji}">${emoji}</button>`).join("")}</div><aside class="player-card" hidden></aside><div class="hint">Tap your block to talk · Then tap Home to open your world · Tap people to connect</div><div class="joystick" aria-label="Movement joystick"><span class="joystick-knob"></span></div>`;
     document.body.append(hud);
     this.hudElement = hud;
     this.statusElement = hud.querySelector<HTMLElement>(".connection")!;
@@ -606,6 +615,7 @@ export class TownSquareScene extends Phaser.Scene {
     if (this.photoInput) this.photoInput.value = "";
     this.setPhotoPreparing(false);
     this.chatForm.hidden = false;
+    this.setPortalButtonVisible(true);
     this.updateChatComposerPosition();
     window.setTimeout(() => this.chatInput?.focus(), 0);
   }
@@ -614,6 +624,7 @@ export class TownSquareScene extends Phaser.Scene {
     if (!this.composingChat) return;
     this.photoPrepareGeneration += 1;
     this.composingChat = false;
+    this.setPortalButtonVisible(false);
     if (this.chatForm) this.chatForm.hidden = true;
     if (this.emojiMenu) this.emojiMenu.hidden = true;
     if (this.photoInput) this.photoInput.value = "";
@@ -629,6 +640,13 @@ export class TownSquareScene extends Phaser.Scene {
       const baseColor = this.player.getData("baseColor") as string;
       (this.player.getAt(0) as Phaser.GameObjects.Rectangle).setFillStyle(Phaser.Display.Color.HexStringToColor(baseColor).color);
     }
+  }
+
+  private setPortalButtonVisible(visible: boolean): void {
+    this.portalButton?.setVisible(visible);
+    this.portalIcon?.setVisible(visible);
+    if (visible) this.portalButton?.setInteractive({ useHandCursor: true });
+    else this.portalButton?.disableInteractive();
   }
 
   private submitChatMessage(): void {
