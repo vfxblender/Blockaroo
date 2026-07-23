@@ -9,6 +9,9 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_TURN_KEY_ID: ${{ secrets.CLOUDFLARE_TURN_KEY_ID }}
+      CLOUDFLARE_TURN_API_TOKEN: ${{ secrets.CLOUDFLARE_TURN_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,7 +24,7 @@ jobs:
       - run: npm run check
         working-directory: worker
       - name: Deploy with TURN relay
-        if: ${{ secrets.CLOUDFLARE_TURN_KEY_ID != '' && secrets.CLOUDFLARE_TURN_API_TOKEN != '' }}
+        if: ${{ env.CLOUDFLARE_TURN_KEY_ID != '' && env.CLOUDFLARE_TURN_API_TOKEN != '' }}
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -36,10 +39,8 @@ jobs:
         env:
           TICKET_SECRET: ${{ secrets.WORLD_TICKET_SECRET }}
           MEDIA_SECRET: ${{ secrets.WORLD_MEDIA_SECRET }}
-          CLOUDFLARE_TURN_KEY_ID: ${{ secrets.CLOUDFLARE_TURN_KEY_ID }}
-          CLOUDFLARE_TURN_API_TOKEN: ${{ secrets.CLOUDFLARE_TURN_API_TOKEN }}
       - name: Deploy without optional TURN relay
-        if: ${{ secrets.CLOUDFLARE_TURN_KEY_ID == '' || secrets.CLOUDFLARE_TURN_API_TOKEN == '' }}
+        if: ${{ env.CLOUDFLARE_TURN_KEY_ID == '' || env.CLOUDFLARE_TURN_API_TOKEN == '' }}
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
