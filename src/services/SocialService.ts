@@ -10,6 +10,7 @@ import type {
   SocialProfile,
 } from "../social/types";
 import { prepareJpeg } from "./image";
+import { createOrLoadProfile } from "./profileBootstrap";
 import { SocialMediaStore } from "./SocialMediaStore";
 import { clearCachedSession, getOrCreateAnonymousSession, supabase } from "./supabase";
 
@@ -96,18 +97,25 @@ export class SocialService {
       return existing;
     }
     this.requireClient();
-    const { data, error } = await supabase!
-      .from("profiles")
-      .insert({
-        user_id: session.user.id,
-        display_name: cleanDisplayName(local.username),
-        block_color: cleanColor(local.color),
-        last_seen_at: new Date().toISOString(),
-      })
-      .select("*")
-      .single();
-    if (error) throw error;
-    return mapProfile(data as ProfileRow);
+    return createOrLoadProfile(
+      async () => {
+        const { data, error } = await supabase!
+          .from("profiles")
+          .insert({
+            user_id: session.user.id,
+            display_name: cleanDisplayName(local.username),
+            block_color: cleanColor(local.color),
+            last_seen_at: new Date().toISOString(),
+          })
+          .select("*")
+          .single();
+        return {
+          data: data ? mapProfile(data as ProfileRow) : null,
+          error,
+        };
+      },
+      () => this.profile(session.user.id),
+    );
   }
 
   async syncIdentity(local: PlayerIdentity): Promise<void> {
