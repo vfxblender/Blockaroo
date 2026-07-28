@@ -1,44 +1,43 @@
 import type { SocialPost, SocialProfile } from "./types";
 
 export const BLOCK_PLANET_PAGE_SIZE = 20;
-export const BLOCK_PLANET_SWIPE_THRESHOLD = 72;
+export const BLOCK_PLANET_DISMISS_THRESHOLD = 88;
 
 export interface BlockPlanetSlot {
   column: number;
   row: number;
-  ring: 1 | 2;
 }
 
 export type BlockPlanetArrowKey = "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight";
 
-// A 5×5 board with the four corners removed gives us exactly twenty post
-// positions plus the permanent center core. Newer posts occupy the inner ring;
-// older posts spiral clockwise onto the outer ring.
+// Eight visible stacks surround the permanent center core. A feed-sized batch
+// is dealt into these positions in layers so dismissing the top post reveals
+// another without downloading more data.
 export const BLOCK_PLANET_SLOTS: readonly BlockPlanetSlot[] = Object.freeze([
-  { column: 3, row: 2, ring: 1 },
-  { column: 4, row: 2, ring: 1 },
-  { column: 4, row: 3, ring: 1 },
-  { column: 4, row: 4, ring: 1 },
-  { column: 3, row: 4, ring: 1 },
-  { column: 2, row: 4, ring: 1 },
-  { column: 2, row: 3, ring: 1 },
-  { column: 2, row: 2, ring: 1 },
-  { column: 3, row: 1, ring: 2 },
-  { column: 4, row: 1, ring: 2 },
-  { column: 5, row: 2, ring: 2 },
-  { column: 5, row: 3, ring: 2 },
-  { column: 5, row: 4, ring: 2 },
-  { column: 4, row: 5, ring: 2 },
-  { column: 3, row: 5, ring: 2 },
-  { column: 2, row: 5, ring: 2 },
-  { column: 1, row: 4, ring: 2 },
-  { column: 1, row: 3, ring: 2 },
-  { column: 1, row: 2, ring: 2 },
-  { column: 2, row: 1, ring: 2 },
+  { column: 2, row: 1 },
+  { column: 3, row: 1 },
+  { column: 3, row: 2 },
+  { column: 3, row: 3 },
+  { column: 2, row: 3 },
+  { column: 1, row: 3 },
+  { column: 1, row: 2 },
+  { column: 1, row: 1 },
 ]);
 
-export function isBlockPlanetSwipe(deltaX: number, deltaY: number): boolean {
-  return Math.hypot(deltaX, deltaY) >= BLOCK_PLANET_SWIPE_THRESHOLD;
+export function isBlockPlanetDismiss(deltaX: number, deltaY: number): boolean {
+  return Math.hypot(deltaX, deltaY) >= BLOCK_PLANET_DISMISS_THRESHOLD;
+}
+
+export function buildBlockPlanetStacks(
+  posts: readonly SocialPost[],
+  dismissedPostIds: ReadonlySet<string> = new Set(),
+): SocialPost[][] {
+  const stacks = BLOCK_PLANET_SLOTS.map(() => [] as SocialPost[]);
+  posts.forEach((post, index) => {
+    if (dismissedPostIds.has(post.id)) return;
+    stacks[index % BLOCK_PLANET_SLOTS.length]!.push(post);
+  });
+  return stacks;
 }
 
 export function nextBlockPlanetSlotIndex(
@@ -64,7 +63,7 @@ export function nextBlockPlanetSlotIndex(
     const forward = (deltaX * vector.x) + (deltaY * vector.y);
     if (forward <= 0) return;
     const perpendicular = Math.abs((deltaX * vector.y) - (deltaY * vector.x));
-    const score = (forward * 10) + perpendicular;
+    const score = (perpendicular * 10) + forward;
     if (score < bestScore) {
       bestScore = score;
       bestIndex = index;
