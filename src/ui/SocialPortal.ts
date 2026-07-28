@@ -56,6 +56,7 @@ export class SocialPortal {
   private feed: SocialPost[] = [];
   private feedPage = 0;
   private feedHasMore = false;
+  private feedLoadingMore = false;
   private feedIsDemo = false;
   private feedPages = new Map<number, SocialPost[]>();
   private planetUpdatesWaiting = false;
@@ -65,7 +66,6 @@ export class SocialPortal {
   private planetComments = new Map<string, string[]>();
   private dismissedPlanetPostIds = new Set<string>();
   private lastDismissedPlanetPostId: string | null = null;
-  private lastDismissedPlanetPage = 0;
   private dismissUndoTimer: number | null = null;
   private planetDrag: BlockPlanetDrag | null = null;
   private planetAnimating = false;
@@ -462,31 +462,26 @@ export class SocialPortal {
   private renderFeed(): string {
     const guestMode = !this.account || this.account.isAnonymous;
     if (!this.feed.length && (guestMode || !this.profileReady() || this.setupError)) this.prepareDemoPlanet(this.feedPage);
-    const posts = this.feed.slice(0, BLOCK_PLANET_PAGE_SIZE);
-    const stacks = buildBlockPlanetStacks(posts, this.dismissedPlanetPostIds);
+    const stacks = buildBlockPlanetStacks(this.feed, this.dismissedPlanetPostIds);
     const cells = BLOCK_PLANET_SLOTS.map((slot, index) => (
       this.renderPlanetStack(stacks[index] ?? [], index, slot.column, slot.row)
     )).join("");
     const remainingPosts = stacks.reduce((total, stack) => total + stack.length, 0);
     const visibleStacks = stacks.filter(stack => stack.length > 0).length;
     const modeLabel = this.feedIsDemo
-      ? `${guestMode ? "GUEST DEMO" : "PROTOTYPE WALL"} · 8 STACKS`
+      ? `${guestMode ? "GUEST DEMO" : "PROTOTYPE WALL"} · 4 STACKS`
       : "FRIENDS · LAST 24 HOURS";
-    const pageLabel = this.feedPage === 0 ? "Now" : `Orbit ${this.feedPage + 1}`;
-    const centerAction = this.planetUpdatesWaiting ? "planet-now" : "new-post";
-    const centerLabel = this.planetUpdatesWaiting ? "New posts waiting. Return to now." : "Create a Block Post";
-    const canLoadOlderWall = remainingPosts === 0 && this.feedHasMore;
     return `
       <section class="blockwall-layout ${this.feedIsDemo ? "is-demo" : ""}">
         <header class="blockwall-heading">
           <div>
             <span class="eyebrow">${modeLabel}</span>
             <h1>Your BlockWall.</h1>
-            <p>Eight post stacks. Drag one to an edge to reveal the next.</p>
+            <p>Four portrait stacks. Swipe one away or tap it to expand.</p>
           </div>
           <div class="blockwall-heading-actions">
-            ${guestMode ? `<button class="claim-block-button" data-social-action="claim-account">Claim your block</button>` : ""}
-            <button class="planet-now-button" data-social-action="planet-now" ${this.feedPage === 0 && !this.planetUpdatesWaiting ? "disabled" : ""}>Now</button>
+            <button class="blockwall-post-button" data-social-action="new-post" aria-label="Create a Block Post"><span aria-hidden="true">＋</span> Post</button>
+            <button class="planet-now-button" data-social-action="planet-now" ${!this.planetUpdatesWaiting ? "disabled" : ""}>Now</button>
           </div>
         </header>
         ${this.setupError ? `<p class="planet-offline-note">Live posts are unavailable, so the guest prototype is running locally.</p>` : ""}
@@ -495,30 +490,19 @@ export class SocialPortal {
           data-block-planet-stage
           tabindex="0"
           role="region"
-          aria-label="BlockWall with eight post stacks around the add button."
+          aria-label="BlockWall with four portrait post stacks."
           aria-describedby="planet-instructions"
         >
-          <span class="planet-orbit" aria-hidden="true"></span>
           <div class="block-planet-grid ${this.planetForming ? "is-forming" : ""}" data-block-planet-grid>
             ${cells}
-            <button
-              class="planet-core ${this.planetUpdatesWaiting ? "has-updates" : ""}"
-              style="grid-column:2;grid-row:2;--core-color:${escapeAttribute(this.localIdentity.color)}"
-              data-social-action="${centerAction}"
-              aria-label="${centerLabel}"
-            >
-              <strong>${this.planetUpdatesWaiting ? "NEW" : "+"}</strong>
-              <small>${this.planetUpdatesWaiting ? "TAP" : "POST"}</small>
-            </button>
           </div>
           <div class="planet-status" aria-live="polite">
-            <strong>${pageLabel}</strong>
+            <strong>${remainingPosts ? "Now" : "Done"}</strong>
             <span>${visibleStacks} stacks · ${remainingPosts} posts</span>
           </div>
         </div>
         <footer class="blockwall-controls">
-          <p id="planet-instructions"><strong>Tap</strong> to expand · <strong>Drag one block</strong> to any edge</p>
-          ${canLoadOlderWall ? `<button data-social-action="load-more">Load the next wall <span aria-hidden="true">→</span></button>` : ""}
+          <p id="planet-instructions"><strong>Tap</strong> to expand · <strong>Swipe one post</strong> away to reveal the next</p>
           ${remainingPosts === 0 && !this.feedHasMore ? `<span class="wall-cleared-label">Wall cleared.</span>` : ""}
         </footer>
         ${this.lastDismissedPlanetPostId ? `
@@ -861,10 +845,6 @@ export class SocialPortal {
       this.render();
       return;
     }
-    if (action === "load-more") {
-      await this.loadMoreFeed();
-      return;
-    }
     if (action === "planet-now") {
       await this.returnPlanetToNow();
       return;
@@ -1118,7 +1098,8 @@ export class SocialPortal {
   }
 
   private async loadMoreFeed(): Promise<void> {
-    if (this.loading || !this.feedHasMore) return;
+    if (this.loading || this.feedLoadingMore || !this.feedHasMore) return;
+    this.feedLoadingMore = true;
     const generation = ++this.loadGeneration;
     try {
       const nextPage = this.feedPage + 1;
@@ -1136,17 +1117,19 @@ export class SocialPortal {
         this.render();
         return;
       }
-      this.feed = posts;
+      const knownIds = new Set(this.feed.map(post => post.id));
+      this.feed = [...this.feed, ...posts.filter(post => !knownIds.has(post.id))];
       this.feedPage = nextPage;
       this.feedHasMore = this.feedIsDemo
         ? hasDemoBlockPlanetPage(nextPage + 1)
         : posts.length === FEED_PAGE_SIZE;
-      this.clearDismissUndo();
-      this.beginPlanetFormation();
+      this.render();
     } catch (error) {
       if (generation !== this.loadGeneration) return;
       this.actions.onNotice(errorMessage(error));
       this.render();
+    } finally {
+      this.feedLoadingMore = false;
     }
   }
 
@@ -1228,12 +1211,16 @@ export class SocialPortal {
     }
     this.dismissedPlanetPostIds.add(postId);
     this.lastDismissedPlanetPostId = postId;
-    this.lastDismissedPlanetPage = this.feedPage;
     this.modal = null;
     this.selectedPlanetPostId = null;
     this.scheduleDismissUndo(postId);
     this.planetDismissing = false;
     this.render();
+    const remainingPosts = buildBlockPlanetStacks(this.feed, this.dismissedPlanetPostIds)
+      .reduce((total, stack) => total + stack.length, 0);
+    if (remainingPosts <= BLOCK_PLANET_SLOTS.length && this.feedHasMore) {
+      void this.loadMoreFeed();
+    }
   }
 
   private scheduleDismissUndo(postId: string): void {
@@ -1253,14 +1240,6 @@ export class SocialPortal {
     if (this.dismissUndoTimer !== null) window.clearTimeout(this.dismissUndoTimer);
     this.dismissUndoTimer = null;
     this.lastDismissedPlanetPostId = null;
-    const page = this.feedPages.get(this.lastDismissedPlanetPage);
-    if (page) {
-      this.feed = page;
-      this.feedPage = this.lastDismissedPlanetPage;
-      this.feedHasMore = this.feedIsDemo
-        ? hasDemoBlockPlanetPage(this.feedPage + 1)
-        : page.length === FEED_PAGE_SIZE;
-    }
     this.beginPlanetFormation();
   }
 
