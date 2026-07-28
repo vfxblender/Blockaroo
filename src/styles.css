@@ -522,26 +522,26 @@ button.planet-detail-author { cursor: pointer; }
   .edit { padding: 8px 10px; font-size: .78rem; }
   .chat-composer { width: calc(100vw - 20px); }
   .player-card { width: calc(100vw - 20px); }
-  .blockwall-layout { min-height: 100%; grid-template-rows: auto auto auto auto; padding: 12px 9px 14px; overflow: auto; }
+  .blockwall-layout { min-height: 100%; grid-template-rows: auto auto auto auto; padding: 12px 3px 14px; overflow: auto; }
   .blockwall-heading { align-items: flex-start; gap: 8px; }
   .blockwall-heading h1 { font-size: 1.75rem; }
   .blockwall-heading p { max-width: 220px; margin-top: 3px; font-size: .65rem; }
   .blockwall-heading-actions { flex-direction: column-reverse; align-items: flex-end; gap: 5px; }
   .claim-block-button, .planet-now-button { min-height: 32px; padding: 6px 9px; border-width: 2px; font-size: .66rem; }
-  .block-planet-stage { width: min(100%,calc(100vw - 18px)); margin-top: -2px; }
-  .block-planet-grid { width: 92%; gap: 8px; }
+  .block-planet-stage { width: min(100%,calc(100vw - 6px)); margin-top: -2px; }
+  .block-planet-grid { width: 100%; gap: 5px; }
   .planet-stack::before, .planet-stack::after, .planet-post { border-width: 3px; border-radius: 9px; }
   .planet-stack.depth-1::after, .planet-stack.depth-2::after { transform: translate(3px,3px) rotate(1deg); }
   .planet-stack.depth-2::before { transform: translate(6px,6px) rotate(1.8deg); }
   .planet-post { box-shadow: 3px 3px 0 #172033; }
   .planet-post.is-unread::after { left: 5px; top: 5px; width: 7px; height: 7px; border-width: 1px; }
-  .planet-card-meta { gap: 5px; padding: 5px; box-shadow: inset 0 4px 0 var(--post-color); }
+  .planet-card-meta { gap: 5px; padding: 4px; box-shadow: inset 0 3px 0 var(--post-color); }
   .planet-author-mark { width: 22px; border-width: 2px; border-radius: 5px; font-size: .55rem; }
   .planet-post-copy { gap: 0 4px; }
   .planet-post-copy strong { font-size: .55rem; }
   .planet-post-copy > span { font-size: .43rem; }
   .planet-post-copy small { font-size: .4rem; }
-  .planet-text-preview { padding: 9px; font-size: .68rem; }
+  .planet-text-preview { padding: 10px; font-size: .74rem; }
   .planet-media-label { top: 5px; right: 5px; padding: 3px 4px; font-size: .38rem; }
   .planet-play-mark { width: 31px; border-width: 2px; font-size: .68rem; }
   .planet-stack-count { right: -4px; bottom: -4px; min-width: 21px; height: 21px; padding: 0 4px; border-width: 2px; box-shadow: 1px 1px 0 #172033; font-size: .5rem; }
