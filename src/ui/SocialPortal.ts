@@ -3,9 +3,10 @@ import { SocialService } from "../services/SocialService";
 import {
   BLOCK_PLANET_PAGE_SIZE,
   BLOCK_PLANET_SLOTS,
+  buildBlockPlanetStacks,
   demoBlockPlanetPage,
   hasDemoBlockPlanetPage,
-  isBlockPlanetSwipe,
+  isBlockPlanetDismiss,
   nextBlockPlanetSlotIndex,
   type BlockPlanetArrowKey,
 } from "../social/blockPlanet";
@@ -29,6 +30,8 @@ interface BlockPlanetDrag {
   deltaX: number;
   deltaY: number;
   moved: boolean;
+  post: HTMLElement;
+  postId: string;
   stage: HTMLElement;
 }
 
@@ -60,8 +63,13 @@ export class SocialPortal {
   private viewedPlanetPostIds = new Set<string>();
   private likedPlanetPostIds = new Set<string>();
   private planetComments = new Map<string, string[]>();
+  private dismissedPlanetPostIds = new Set<string>();
+  private lastDismissedPlanetPostId: string | null = null;
+  private lastDismissedPlanetPage = 0;
+  private dismissUndoTimer: number | null = null;
   private planetDrag: BlockPlanetDrag | null = null;
   private planetAnimating = false;
+  private planetDismissing = false;
   private planetForming = false;
   private suppressPlanetClickUntil = 0;
   private friends: FriendConnection[] = [];
@@ -239,6 +247,7 @@ export class SocialPortal {
     for (const url of this.mediaUrls.values()) URL.revokeObjectURL(url);
     this.mediaUrls.clear();
     this.mediaLoads.clear();
+    if (this.dismissUndoTimer !== null) window.clearTimeout(this.dismissUndoTimer);
     this.root.remove();
   }
 
@@ -454,25 +463,26 @@ export class SocialPortal {
     const guestMode = !this.account || this.account.isAnonymous;
     if (!this.feed.length && (guestMode || !this.profileReady() || this.setupError)) this.prepareDemoPlanet(this.feedPage);
     const posts = this.feed.slice(0, BLOCK_PLANET_PAGE_SIZE);
-    const cells = BLOCK_PLANET_SLOTS.map((slot, index) => {
-      const post = posts[index];
-      return post
-        ? this.renderPlanetBlock(post, index, slot.column, slot.row, slot.ring)
-        : `<span class="planet-empty-slot ring-${slot.ring}" style="grid-column:${slot.column};grid-row:${slot.row}" aria-hidden="true"><i></i></span>`;
-    }).join("");
+    const stacks = buildBlockPlanetStacks(posts, this.dismissedPlanetPostIds);
+    const cells = BLOCK_PLANET_SLOTS.map((slot, index) => (
+      this.renderPlanetStack(stacks[index] ?? [], index, slot.column, slot.row)
+    )).join("");
+    const remainingPosts = stacks.reduce((total, stack) => total + stack.length, 0);
+    const visibleStacks = stacks.filter(stack => stack.length > 0).length;
     const modeLabel = this.feedIsDemo
-      ? `${guestMode ? "GUEST DEMO" : "PROTOTYPE WALL"} · 20 POSTS`
+      ? `${guestMode ? "GUEST DEMO" : "PROTOTYPE WALL"} · 8 STACKS`
       : "FRIENDS · LAST 24 HOURS";
     const pageLabel = this.feedPage === 0 ? "Now" : `Orbit ${this.feedPage + 1}`;
     const centerAction = this.planetUpdatesWaiting ? "planet-now" : "new-post";
     const centerLabel = this.planetUpdatesWaiting ? "New posts waiting. Return to now." : "Create a Block Post";
+    const canLoadOlderWall = remainingPosts === 0 && this.feedHasMore;
     return `
       <section class="blockwall-layout ${this.feedIsDemo ? "is-demo" : ""}">
         <header class="blockwall-heading">
           <div>
             <span class="eyebrow">${modeLabel}</span>
-            <h1>Your people, in orbit.</h1>
-            <p>New posts live near the core. Older posts move outward.</p>
+            <h1>Your BlockWall.</h1>
+            <p>Eight post stacks. Drag one to an edge to reveal the next.</p>
           </div>
           <div class="blockwall-heading-actions">
             ${guestMode ? `<button class="claim-block-button" data-social-action="claim-account">Claim your block</button>` : ""}
@@ -485,15 +495,15 @@ export class SocialPortal {
           data-block-planet-stage
           tabindex="0"
           role="region"
-          aria-label="BlockWall planet. Swipe for older posts or use the Older orbit button."
+          aria-label="BlockWall with eight post stacks around the add button."
+          aria-describedby="planet-instructions"
         >
-          <span class="planet-orbit orbit-one" aria-hidden="true"></span>
-          <span class="planet-orbit orbit-two" aria-hidden="true"></span>
+          <span class="planet-orbit" aria-hidden="true"></span>
           <div class="block-planet-grid ${this.planetForming ? "is-forming" : ""}" data-block-planet-grid>
             ${cells}
             <button
               class="planet-core ${this.planetUpdatesWaiting ? "has-updates" : ""}"
-              style="grid-column:3;grid-row:3;--core-color:${escapeAttribute(this.localIdentity.color)}"
+              style="grid-column:2;grid-row:2;--core-color:${escapeAttribute(this.localIdentity.color)}"
               data-social-action="${centerAction}"
               aria-label="${centerLabel}"
             >
@@ -503,51 +513,99 @@ export class SocialPortal {
           </div>
           <div class="planet-status" aria-live="polite">
             <strong>${pageLabel}</strong>
-            <span>${posts.length} blocks</span>
+            <span>${visibleStacks} stacks · ${remainingPosts} posts</span>
           </div>
         </div>
         <footer class="blockwall-controls">
-          <p><strong>Tap</strong> a block to open it · <strong>Swipe</strong> the planet into orbit</p>
-          <button data-social-action="load-more" ${!this.feedHasMore ? "disabled" : ""}>
-            ${this.feedHasMore ? "Older orbit" : "Edge of the wall"} <span aria-hidden="true">↗</span>
-          </button>
+          <p id="planet-instructions"><strong>Tap</strong> to expand · <strong>Drag one block</strong> to any edge</p>
+          ${canLoadOlderWall ? `<button data-social-action="load-more">Load the next wall <span aria-hidden="true">→</span></button>` : ""}
+          ${remainingPosts === 0 && !this.feedHasMore ? `<span class="wall-cleared-label">Wall cleared.</span>` : ""}
         </footer>
+        ${this.lastDismissedPlanetPostId ? `
+          <div class="planet-undo" role="status">
+            <span>Post sent to orbit.</span>
+            <button data-social-action="undo-planet-dismiss">Undo</button>
+          </div>
+        ` : ""}
         ${this.feedIsDemo ? `
           <aside class="guest-demo-note">
             <span>${guestMode ? "GUEST ACCESS" : "PROTOTYPE MODE"}</span>
-            <p>${guestMode ? "Test the wall without signing in." : "Your live wall is quiet, so demo blocks are filling the orbit."} Likes and comments stay on this device.</p>
+            <p>${guestMode ? "Test the wall without signing in." : "Your live wall is quiet, so demo blocks are filling the stacks."} Reactions and dismissed posts stay on this device.</p>
           </aside>
         ` : ""}
       </section>
     `;
   }
 
-  private renderPlanetBlock(
-    post: SocialPost,
-    index: number,
+  private renderPlanetStack(
+    stack: SocialPost[],
+    slotIndex: number,
     column: number,
     row: number,
-    ring: 1 | 2,
   ): string {
+    const post = stack[0];
+    if (!post) {
+      return `
+        <span
+          class="planet-stack is-empty"
+          style="grid-column:${column};grid-row:${row}"
+          aria-hidden="true"
+        ><i></i></span>
+      `;
+    }
     const viewed = this.viewedPlanetPostIds.has(post.id);
     const initial = post.author.displayName.slice(0, 1).toUpperCase() || "□";
-    const preview = truncateText(post.body || (post.mediaPath ? "Shared a picture" : "Block Post"), ring === 1 ? 62 : 42);
-    return `
-      <button
-        class="planet-post ring-${ring} ${viewed ? "is-viewed" : "is-unread"} ${post.mediaPath ? "has-media" : ""}"
-        style="grid-column:${column};grid-row:${row};--post-color:${escapeAttribute(post.author.blockColor)};--planet-index:${index};--spawn-x:${(3 - column) * 105}%;--spawn-y:${(3 - row) * 105}%"
-        data-social-action="open-planet-post"
-        data-post-id="${escapeAttribute(post.id)}"
-        data-planet-index="${index}"
-        aria-label="${escapeAttribute(`${post.author.displayName}: ${post.body || "Photo post"}. Posted ${timeAgo(post.createdAt)}.`)}"
-      >
-        <span class="planet-author-mark">${escapeHtml(initial)}</span>
-        <span class="planet-post-copy">
-          <strong>${escapeHtml(post.author.displayName)}</strong>
-          <span>${escapeHtml(preview)}</span>
+    const preview = truncateText(post.body || (post.mediaPath ? "Shared a picture" : "Block Post"), 68);
+    const stackDepth = Math.min(2, Math.max(0, stack.length - 1));
+    const visual = demoPlanetVisual(post.id);
+    const mediaKind = post.mediaType === "gif"
+      ? "GIF"
+      : post.mediaPath
+        ? "PHOTO"
+        : visual?.kind.toUpperCase();
+    const media = post.mediaPath
+      ? `
+        <span class="planet-card-media ${post.mediaType === "gif" ? "is-motion" : ""}">
+          <span class="media-placeholder">Loading…</span>
+          <img data-post-media="${escapeAttribute(post.id)}" alt="" hidden />
+          <span class="planet-media-label">${mediaKind}</span>
+          ${post.mediaType === "gif" ? `<span class="planet-play-mark" aria-hidden="true">▶</span>` : ""}
         </span>
-        <small>${post.mediaPath ? "PHOTO · " : ""}${timeAgo(post.createdAt)}</small>
-      </button>
+      `
+      : visual
+        ? `
+          <span class="planet-card-media planet-demo-media demo-scene-${visual.scene}">
+            <span class="planet-media-label">${mediaKind}</span>
+            ${visual.kind === "video" ? `<span class="planet-play-mark" aria-hidden="true">▶</span>` : ""}
+          </span>
+        `
+        : `<span class="planet-text-preview">${escapeHtml(preview)}</span>`;
+    return `
+      <div
+        class="planet-stack depth-${stackDepth}"
+        style="grid-column:${column};grid-row:${row};--post-color:${escapeAttribute(post.author.blockColor)};--planet-index:${slotIndex}"
+        data-stack-slot="${slotIndex}"
+      >
+        <button
+          class="planet-post ${viewed ? "is-viewed" : "is-unread"} ${mediaKind ? "has-media" : ""}"
+          data-social-action="open-planet-post"
+          data-post-id="${escapeAttribute(post.id)}"
+          data-planet-post
+          data-planet-index="${slotIndex}"
+          aria-label="${escapeAttribute(`${post.author.displayName}: ${post.body || "Media post"}. Posted ${timeAgo(post.createdAt)}. Drag to an edge to dismiss.`)}"
+        >
+          ${media}
+          <span class="planet-card-meta">
+            <span class="planet-author-mark">${escapeHtml(initial)}</span>
+            <span class="planet-post-copy">
+              <strong>${escapeHtml(post.author.displayName)}</strong>
+              <span>${escapeHtml(preview)}</span>
+              <small>${timeAgo(post.createdAt)}</small>
+            </span>
+          </span>
+        </button>
+        ${stack.length > 1 ? `<span class="planet-stack-count" aria-hidden="true">+${stack.length - 1}</span>` : ""}
+      </div>
     `;
   }
 
@@ -557,9 +615,12 @@ export class SocialPortal {
     const guestMode = !this.account || this.account.isAnonymous;
     const liked = this.likedPlanetPostIds.has(post.id);
     const comments = this.planetComments.get(post.id) ?? [];
+    const demoVisual = demoPlanetVisual(post.id);
     const media = post.mediaPath
-      ? `<div class="planet-detail-media"><div class="media-placeholder">Loading picture…</div><img data-post-media="${escapeAttribute(post.id)}" alt="Post by ${escapeAttribute(post.author.displayName)}" hidden /></div>`
-      : "";
+      ? `<div class="planet-detail-media ${post.mediaType === "gif" ? "is-motion" : ""}"><div class="media-placeholder">Loading picture…</div><img data-post-media="${escapeAttribute(post.id)}" alt="Post by ${escapeAttribute(post.author.displayName)}" hidden />${post.mediaType === "gif" ? `<span class="planet-detail-media-label">GIF</span>` : ""}</div>`
+      : demoVisual
+        ? `<div class="planet-detail-media planet-detail-demo-media demo-scene-${demoVisual.scene}">${demoVisual.kind === "video" ? `<span class="planet-detail-play" aria-hidden="true">▶</span>` : ""}<span class="planet-detail-media-label">${demoVisual.kind.toUpperCase()} DEMO</span></div>`
+        : "";
     const author = this.feedIsDemo
       ? `<div class="planet-detail-author"><i style="--author-color:${escapeAttribute(post.author.blockColor)}"></i><span><strong>${escapeHtml(post.author.displayName)}</strong><small>@${escapeHtml(post.author.handle ?? "neighbor")} · ${timeAgo(post.createdAt)}</small></span></div>`
       : `<button class="planet-detail-author" data-social-action="view-home" data-user-id="${escapeAttribute(post.authorId)}"><i style="--author-color:${escapeAttribute(post.author.blockColor)}"></i><span><strong>${escapeHtml(post.author.displayName)}</strong><small>${post.author.handle ? `@${escapeHtml(post.author.handle)} · ` : ""}${timeAgo(post.createdAt)}</small></span></button>`;
@@ -570,8 +631,8 @@ export class SocialPortal {
             ${author}
             <button class="planet-detail-close" data-social-action="cancel-modal" aria-label="Close post">×</button>
           </header>
-          ${post.body ? `<p class="planet-detail-body">${escapeHtml(post.body)}</p>` : ""}
           ${media}
+          ${post.body ? `<p class="planet-detail-body">${escapeHtml(post.body)}</p>` : ""}
           ${post.locationLabel ? `<span class="planet-detail-location">⌖ ${escapeHtml(post.locationLabel)}</span>` : ""}
           <div class="planet-reactions">
             <button class="${liked ? "is-liked" : ""}" data-social-action="planet-like" aria-pressed="${liked}">
@@ -588,7 +649,10 @@ export class SocialPortal {
           </form>
           <footer>
             <p>${guestMode ? "Guest reactions stay on this device." : "Reactions are local while this prototype is being tested."}</p>
-            ${guestMode ? `<button data-social-action="claim-account">Claim your block to keep them</button>` : ""}
+            <div class="planet-detail-actions">
+              <button class="planet-detail-collapse" data-social-action="cancel-modal">Close</button>
+              <button class="planet-detail-orbit" data-social-action="dismiss-planet-post">Send to orbit <span aria-hidden="true">↗</span></button>
+            </div>
           </footer>
         </section>
       </div>
@@ -798,7 +862,7 @@ export class SocialPortal {
       return;
     }
     if (action === "load-more") {
-      await this.advancePlanet(-150, -90);
+      await this.loadMoreFeed();
       return;
     }
     if (action === "planet-now") {
@@ -811,6 +875,18 @@ export class SocialPortal {
       this.viewedPlanetPostIds.add(target.dataset.postId);
       this.modal = "planet-post";
       this.render();
+      return;
+    }
+    if (action === "dismiss-planet-post" && this.selectedPlanetPostId) {
+      const postId = this.selectedPlanetPostId;
+      this.modal = null;
+      this.selectedPlanetPostId = null;
+      this.render();
+      await this.dismissPlanetPost(postId, 160, -50);
+      return;
+    }
+    if (action === "undo-planet-dismiss") {
+      this.undoPlanetDismiss();
       return;
     }
     if (action === "planet-like" && this.selectedPlanetPostId) {
@@ -1065,33 +1141,12 @@ export class SocialPortal {
       this.feedHasMore = this.feedIsDemo
         ? hasDemoBlockPlanetPage(nextPage + 1)
         : posts.length === FEED_PAGE_SIZE;
+      this.clearDismissUndo();
       this.beginPlanetFormation();
     } catch (error) {
       if (generation !== this.loadGeneration) return;
       this.actions.onNotice(errorMessage(error));
       this.render();
-    }
-  }
-
-  private async advancePlanet(deltaX: number, deltaY: number): Promise<void> {
-    if (this.planetAnimating) return;
-    if (!this.feedHasMore) {
-      this.actions.onNotice("You reached the edge of this BlockWall.");
-      this.clearPlanetDragStyles();
-      return;
-    }
-    this.planetAnimating = true;
-    const stage = this.root.querySelector<HTMLElement>("[data-block-planet-stage]");
-    const grid = this.root.querySelector<HTMLElement>("[data-block-planet-grid]");
-    const magnitude = Math.max(1, Math.hypot(deltaX, deltaY));
-    stage?.style.setProperty("--orbit-x", `${(deltaX / magnitude) * 170}px`);
-    stage?.style.setProperty("--orbit-y", `${(deltaY / magnitude) * 170}px`);
-    grid?.classList.add("is-orbiting");
-    await wait(220);
-    try {
-      await this.loadMoreFeed();
-    } finally {
-      this.planetAnimating = false;
     }
   }
 
@@ -1153,10 +1208,74 @@ export class SocialPortal {
     return this.feed.find(candidate => candidate.id === postId) ?? null;
   }
 
+  private async dismissPlanetPost(
+    postId: string,
+    deltaX: number,
+    deltaY: number,
+    postElement?: HTMLElement,
+  ): Promise<void> {
+    if (this.planetDismissing || this.dismissedPlanetPostIds.has(postId)) return;
+    this.planetDismissing = true;
+    const card = postElement ?? [...this.root.querySelectorAll<HTMLElement>("[data-planet-post]")]
+      .find(candidate => candidate.dataset.postId === postId);
+    if (card) {
+      const magnitude = Math.max(1, Math.hypot(deltaX, deltaY));
+      const distance = Math.max(520, Math.hypot(window.innerWidth, window.innerHeight) * .72);
+      card.style.setProperty("--dismiss-x", `${(deltaX / magnitude) * distance}px`);
+      card.style.setProperty("--dismiss-y", `${(deltaY / magnitude) * distance}px`);
+      card.classList.add("is-dismissing");
+      await wait(260);
+    }
+    this.dismissedPlanetPostIds.add(postId);
+    this.lastDismissedPlanetPostId = postId;
+    this.lastDismissedPlanetPage = this.feedPage;
+    this.modal = null;
+    this.selectedPlanetPostId = null;
+    this.scheduleDismissUndo(postId);
+    this.planetDismissing = false;
+    this.render();
+  }
+
+  private scheduleDismissUndo(postId: string): void {
+    if (this.dismissUndoTimer !== null) window.clearTimeout(this.dismissUndoTimer);
+    this.dismissUndoTimer = window.setTimeout(() => {
+      if (this.lastDismissedPlanetPostId !== postId) return;
+      this.lastDismissedPlanetPostId = null;
+      this.dismissUndoTimer = null;
+      if (this.openState && this.tab === "feed") this.render();
+    }, 5_000);
+  }
+
+  private undoPlanetDismiss(): void {
+    const postId = this.lastDismissedPlanetPostId;
+    if (!postId) return;
+    this.dismissedPlanetPostIds.delete(postId);
+    if (this.dismissUndoTimer !== null) window.clearTimeout(this.dismissUndoTimer);
+    this.dismissUndoTimer = null;
+    this.lastDismissedPlanetPostId = null;
+    const page = this.feedPages.get(this.lastDismissedPlanetPage);
+    if (page) {
+      this.feed = page;
+      this.feedPage = this.lastDismissedPlanetPage;
+      this.feedHasMore = this.feedIsDemo
+        ? hasDemoBlockPlanetPage(this.feedPage + 1)
+        : page.length === FEED_PAGE_SIZE;
+    }
+    this.beginPlanetFormation();
+  }
+
+  private clearDismissUndo(): void {
+    if (this.dismissUndoTimer !== null) window.clearTimeout(this.dismissUndoTimer);
+    this.dismissUndoTimer = null;
+    this.lastDismissedPlanetPostId = null;
+  }
+
   private handlePlanetPointerDown(event: PointerEvent): void {
-    if (event.button !== 0 || this.planetAnimating || this.modal) return;
-    const stage = (event.target as HTMLElement).closest<HTMLElement>("[data-block-planet-stage]");
-    if (!stage) return;
+    if (event.button !== 0 || this.planetAnimating || this.planetDismissing || this.modal) return;
+    const post = (event.target as HTMLElement).closest<HTMLElement>("[data-planet-post]");
+    const stage = post?.closest<HTMLElement>("[data-block-planet-stage]");
+    const postId = post?.dataset.postId;
+    if (!post || !stage || !postId) return;
     this.planetDrag = {
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -1164,9 +1283,12 @@ export class SocialPortal {
       deltaX: 0,
       deltaY: 0,
       moved: false,
+      post,
+      postId,
       stage,
     };
-    stage.setPointerCapture?.(event.pointerId);
+    post.setPointerCapture?.(event.pointerId);
+    post.classList.add("is-dragging");
     stage.classList.add("is-dragging");
   }
 
@@ -1178,32 +1300,34 @@ export class SocialPortal {
     if (Math.hypot(drag.deltaX, drag.deltaY) > 7) drag.moved = true;
     if (!drag.moved) return;
     event.preventDefault();
-    const resistance = Math.min(1, 100 / Math.max(100, Math.hypot(drag.deltaX, drag.deltaY)));
-    drag.stage.style.setProperty("--drag-x", `${drag.deltaX * resistance}px`);
-    drag.stage.style.setProperty("--drag-y", `${drag.deltaY * resistance}px`);
-    drag.stage.style.setProperty("--drag-rotate", `${drag.deltaX * 0.025}deg`);
+    drag.post.style.setProperty("--card-drag-x", `${drag.deltaX}px`);
+    drag.post.style.setProperty("--card-drag-y", `${drag.deltaY}px`);
+    drag.post.style.setProperty("--card-drag-rotate", `${drag.deltaX * .035}deg`);
+    const ready = isBlockPlanetDismiss(drag.deltaX, drag.deltaY);
+    drag.post.classList.toggle("is-dismiss-ready", ready);
+    drag.stage.classList.toggle("is-dismiss-ready", ready);
   }
 
   private handlePlanetPointerEnd(event: PointerEvent): void {
     const drag = this.planetDrag;
     if (!drag || drag.pointerId !== event.pointerId) return;
     this.planetDrag = null;
-    drag.stage.releasePointerCapture?.(event.pointerId);
+    drag.post.releasePointerCapture?.(event.pointerId);
+    drag.post.classList.remove("is-dragging", "is-dismiss-ready");
     drag.stage.classList.remove("is-dragging");
+    drag.stage.classList.remove("is-dismiss-ready");
     if (drag.moved) this.suppressPlanetClickUntil = performance.now() + 350;
-    if (isBlockPlanetSwipe(drag.deltaX, drag.deltaY)) {
-      void this.advancePlanet(drag.deltaX, drag.deltaY);
+    if (event.type !== "pointercancel" && isBlockPlanetDismiss(drag.deltaX, drag.deltaY)) {
+      void this.dismissPlanetPost(drag.postId, drag.deltaX, drag.deltaY, drag.post);
       return;
     }
-    this.clearPlanetDragStyles(drag.stage);
+    this.clearPlanetCardDragStyles(drag.post);
   }
 
-  private clearPlanetDragStyles(stage = this.root.querySelector<HTMLElement>("[data-block-planet-stage]")): void {
-    stage?.style.removeProperty("--drag-x");
-    stage?.style.removeProperty("--drag-y");
-    stage?.style.removeProperty("--drag-rotate");
-    stage?.style.removeProperty("--orbit-x");
-    stage?.style.removeProperty("--orbit-y");
+  private clearPlanetCardDragStyles(post: HTMLElement): void {
+    post.style.removeProperty("--card-drag-x");
+    post.style.removeProperty("--card-drag-y");
+    post.style.removeProperty("--card-drag-rotate");
   }
 
   private handlePlanetKeyDown(event: KeyboardEvent): void {
@@ -1214,8 +1338,13 @@ export class SocialPortal {
       this.render();
       return;
     }
-    if (!isBlockPlanetArrowKey(event.key)) return;
     const current = (event.target as HTMLElement).closest<HTMLElement>("[data-planet-index]");
+    if ((event.key === "Delete" || event.key === "Backspace") && current?.dataset.postId) {
+      event.preventDefault();
+      void this.dismissPlanetPost(current.dataset.postId, 150, -45, current);
+      return;
+    }
+    if (!isBlockPlanetArrowKey(event.key)) return;
     if (!current) return;
     const currentIndex = Number(current.dataset.planetIndex);
     if (!Number.isInteger(currentIndex)) return;
@@ -1347,6 +1476,8 @@ export class SocialPortal {
     this.viewedPlanetPostIds.clear();
     this.likedPlanetPostIds.clear();
     this.planetComments.clear();
+    this.dismissedPlanetPostIds.clear();
+    this.clearDismissUndo();
     this.friends = [];
     this.mapPosts = [];
     this.home = null;
@@ -1364,6 +1495,24 @@ function navButton(tab: PortalTab, label: string, active: PortalTab, badge = 0):
 
 function isBlockPlanetArrowKey(value: string): value is BlockPlanetArrowKey {
   return value === "ArrowUp" || value === "ArrowDown" || value === "ArrowLeft" || value === "ArrowRight";
+}
+
+function demoPlanetVisual(postId: string): { kind: "photo" | "video"; scene: number } | null {
+  const match = /^demo-block-post-(\d+)$/.exec(postId);
+  if (!match) return null;
+  const index = Math.max(0, Number(match[1]) - 1);
+  const kinds: Array<"photo" | "video" | null> = [
+    "video",
+    "photo",
+    "photo",
+    null,
+    "video",
+    "photo",
+    null,
+    "photo",
+  ];
+  const kind = kinds[index % kinds.length];
+  return kind ? { kind, scene: index % 6 } : null;
 }
 
 function truncateText(value: string, maximum: number): string {
