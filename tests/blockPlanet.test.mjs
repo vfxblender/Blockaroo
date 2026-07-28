@@ -2,19 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   BLOCK_PLANET_SLOTS,
+  buildBlockPlanetStacks,
   demoBlockPlanetPage,
   hasDemoBlockPlanetPage,
-  isBlockPlanetSwipe,
+  isBlockPlanetDismiss,
   nextBlockPlanetSlotIndex,
 } from "../src/social/blockPlanet.ts";
 
-test("the Block Planet has twenty unique post slots around one permanent core", () => {
-  assert.equal(BLOCK_PLANET_SLOTS.length, 20);
-  assert.equal(new Set(BLOCK_PLANET_SLOTS.map(slot => `${slot.column}:${slot.row}`)).size, 20);
-  assert.equal(BLOCK_PLANET_SLOTS.some(slot => slot.column === 3 && slot.row === 3), false);
-  assert.equal(BLOCK_PLANET_SLOTS.some(slot => [1, 5].includes(slot.column) && [1, 5].includes(slot.row)), false);
-  assert.equal(BLOCK_PLANET_SLOTS.filter(slot => slot.ring === 1).length, 8);
-  assert.equal(BLOCK_PLANET_SLOTS.filter(slot => slot.ring === 2).length, 12);
+test("the Block Planet has eight unique stacks around one permanent core", () => {
+  assert.equal(BLOCK_PLANET_SLOTS.length, 8);
+  assert.equal(new Set(BLOCK_PLANET_SLOTS.map(slot => `${slot.column}:${slot.row}`)).size, 8);
+  assert.equal(BLOCK_PLANET_SLOTS.some(slot => slot.column === 2 && slot.row === 2), false);
+  assert.equal(BLOCK_PLANET_SLOTS.every(slot => [1, 2, 3].includes(slot.column) && [1, 2, 3].includes(slot.row)), true);
 });
 
 test("guest demo posts arrive in feed-sized pages and stop at the real edge", () => {
@@ -30,16 +29,28 @@ test("guest demo posts arrive in feed-sized pages and stop at the real edge", ()
   assert.deepEqual(demoBlockPlanetPage(2, now), []);
 });
 
-test("orbit changes require a deliberate swipe", () => {
-  assert.equal(isBlockPlanetSwipe(40, 40), false);
-  assert.equal(isBlockPlanetSwipe(72, 0), true);
-  assert.equal(isBlockPlanetSwipe(-60, -60), true);
+test("twenty posts are dealt beneath eight visible stack tops", () => {
+  const posts = demoBlockPlanetPage(0, Date.parse("2026-07-27T12:00:00Z"));
+  const stacks = buildBlockPlanetStacks(posts);
+  assert.deepEqual(stacks.map(stack => stack.length), [3, 3, 3, 3, 2, 2, 2, 2]);
+  assert.deepEqual(stacks.map(stack => stack[0]?.id), posts.slice(0, 8).map(post => post.id));
+
+  const dismissed = new Set([posts[0].id, posts[8].id]);
+  const afterDismiss = buildBlockPlanetStacks(posts, dismissed);
+  assert.equal(afterDismiss[0][0]?.id, posts[16].id);
+  assert.equal(afterDismiss.flat().length, 18);
+});
+
+test("sending one post to orbit requires a deliberate drag", () => {
+  assert.equal(isBlockPlanetDismiss(40, 40), false);
+  assert.equal(isBlockPlanetDismiss(88, 0), true);
+  assert.equal(isBlockPlanetDismiss(-64, -64), true);
 });
 
 test("arrow navigation moves to the nearest block in the requested direction", () => {
-  const start = BLOCK_PLANET_SLOTS.findIndex(slot => slot.column === 3 && slot.row === 2);
+  const start = BLOCK_PLANET_SLOTS.findIndex(slot => slot.column === 2 && slot.row === 1);
   const left = nextBlockPlanetSlotIndex(start, "ArrowLeft");
-  const up = nextBlockPlanetSlotIndex(start, "ArrowUp");
-  assert.deepEqual(BLOCK_PLANET_SLOTS[left], { column: 2, row: 2, ring: 1 });
-  assert.deepEqual(BLOCK_PLANET_SLOTS[up], { column: 3, row: 1, ring: 2 });
+  const down = nextBlockPlanetSlotIndex(start, "ArrowDown");
+  assert.deepEqual(BLOCK_PLANET_SLOTS[left], { column: 1, row: 1 });
+  assert.deepEqual(BLOCK_PLANET_SLOTS[down], { column: 2, row: 3 });
 });
