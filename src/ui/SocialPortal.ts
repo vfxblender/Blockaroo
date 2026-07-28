@@ -65,8 +65,6 @@ export class SocialPortal {
   private likedPlanetPostIds = new Set<string>();
   private planetComments = new Map<string, string[]>();
   private dismissedPlanetPostIds = new Set<string>();
-  private lastDismissedPlanetPostId: string | null = null;
-  private dismissUndoTimer: number | null = null;
   private planetDrag: BlockPlanetDrag | null = null;
   private planetAnimating = false;
   private planetDismissing = false;
@@ -247,7 +245,6 @@ export class SocialPortal {
     for (const url of this.mediaUrls.values()) URL.revokeObjectURL(url);
     this.mediaUrls.clear();
     this.mediaLoads.clear();
-    if (this.dismissUndoTimer !== null) window.clearTimeout(this.dismissUndoTimer);
     this.root.remove();
   }
 
@@ -489,12 +486,6 @@ export class SocialPortal {
         <footer class="blockwall-controls">
           ${remainingPosts === 0 && !this.feedHasMore ? `<span class="wall-cleared-label">Wall cleared.</span>` : ""}
         </footer>
-        ${this.lastDismissedPlanetPostId ? `
-          <div class="planet-undo" role="status">
-            <span>Post sent to orbit.</span>
-            <button data-social-action="undo-planet-dismiss">Undo</button>
-          </div>
-        ` : ""}
       </section>
     `;
   }
@@ -851,10 +842,6 @@ export class SocialPortal {
       await this.dismissPlanetPost(postId, 160, -50);
       return;
     }
-    if (action === "undo-planet-dismiss") {
-      this.undoPlanetDismiss();
-      return;
-    }
     if (action === "planet-like" && this.selectedPlanetPostId) {
       if (this.likedPlanetPostIds.has(this.selectedPlanetPostId)) {
         this.likedPlanetPostIds.delete(this.selectedPlanetPostId);
@@ -1196,10 +1183,8 @@ export class SocialPortal {
       await wait(260);
     }
     this.dismissedPlanetPostIds.add(postId);
-    this.lastDismissedPlanetPostId = postId;
     this.modal = null;
     this.selectedPlanetPostId = null;
-    this.scheduleDismissUndo(postId);
     this.planetDismissing = false;
     this.render();
     const remainingPosts = buildBlockPlanetStacks(this.feed, this.dismissedPlanetPostIds)
@@ -1207,32 +1192,6 @@ export class SocialPortal {
     if (remainingPosts <= BLOCK_PLANET_SLOTS.length && this.feedHasMore) {
       void this.loadMoreFeed();
     }
-  }
-
-  private scheduleDismissUndo(postId: string): void {
-    if (this.dismissUndoTimer !== null) window.clearTimeout(this.dismissUndoTimer);
-    this.dismissUndoTimer = window.setTimeout(() => {
-      if (this.lastDismissedPlanetPostId !== postId) return;
-      this.lastDismissedPlanetPostId = null;
-      this.dismissUndoTimer = null;
-      if (this.openState && this.tab === "feed") this.render();
-    }, 5_000);
-  }
-
-  private undoPlanetDismiss(): void {
-    const postId = this.lastDismissedPlanetPostId;
-    if (!postId) return;
-    this.dismissedPlanetPostIds.delete(postId);
-    if (this.dismissUndoTimer !== null) window.clearTimeout(this.dismissUndoTimer);
-    this.dismissUndoTimer = null;
-    this.lastDismissedPlanetPostId = null;
-    this.beginPlanetFormation();
-  }
-
-  private clearDismissUndo(): void {
-    if (this.dismissUndoTimer !== null) window.clearTimeout(this.dismissUndoTimer);
-    this.dismissUndoTimer = null;
-    this.lastDismissedPlanetPostId = null;
   }
 
   private handlePlanetPointerDown(event: PointerEvent): void {
@@ -1442,7 +1401,6 @@ export class SocialPortal {
     this.likedPlanetPostIds.clear();
     this.planetComments.clear();
     this.dismissedPlanetPostIds.clear();
-    this.clearDismissUndo();
     this.friends = [];
     this.mapPosts = [];
     this.home = null;
