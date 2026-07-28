@@ -565,8 +565,8 @@ export class SocialPortal {
           aria-label="${escapeAttribute(`${post.author.displayName}: ${post.body || "Media post"}. Posted ${timeAgo(post.createdAt)}. Drag to an edge to dismiss.`)}"
         >
           ${media}
-          ${authorAvatar}
           <span class="planet-card-meta">
+            ${authorAvatar}
             <span class="planet-post-copy">
               <strong>${escapeHtml(post.author.displayName)}</strong>
               <span>${escapeHtml(preview)}</span>
