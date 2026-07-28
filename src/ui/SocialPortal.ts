@@ -467,21 +467,11 @@ export class SocialPortal {
       this.renderPlanetStack(stacks[index] ?? [], index, slot.column, slot.row)
     )).join("");
     const remainingPosts = stacks.reduce((total, stack) => total + stack.length, 0);
-    const visibleStacks = stacks.filter(stack => stack.length > 0).length;
-    const modeLabel = this.feedIsDemo
-      ? `${guestMode ? "GUEST DEMO" : "PROTOTYPE WALL"} · 4 STACKS`
-      : "FRIENDS · LAST 24 HOURS";
     return `
       <section class="blockwall-layout ${this.feedIsDemo ? "is-demo" : ""}">
         <header class="blockwall-heading">
-          <div>
-            <span class="eyebrow">${modeLabel}</span>
-            <h1>Your BlockWall.</h1>
-            <p>Four portrait stacks. Swipe one away or tap it to expand.</p>
-          </div>
           <div class="blockwall-heading-actions">
             <button class="blockwall-post-button" data-social-action="new-post" aria-label="Create a Block Post"><span aria-hidden="true">＋</span> Post</button>
-            <button class="planet-now-button" data-social-action="planet-now" ${!this.planetUpdatesWaiting ? "disabled" : ""}>Now</button>
           </div>
         </header>
         ${this.setupError ? `<p class="planet-offline-note">Live posts are unavailable, so the guest prototype is running locally.</p>` : ""}
@@ -491,18 +481,12 @@ export class SocialPortal {
           tabindex="0"
           role="region"
           aria-label="BlockWall with four portrait post stacks."
-          aria-describedby="planet-instructions"
         >
           <div class="block-planet-grid ${this.planetForming ? "is-forming" : ""}" data-block-planet-grid>
             ${cells}
           </div>
-          <div class="planet-status" aria-live="polite">
-            <strong>${remainingPosts ? "Now" : "Done"}</strong>
-            <span>${visibleStacks} stacks · ${remainingPosts} posts</span>
-          </div>
         </div>
         <footer class="blockwall-controls">
-          <p id="planet-instructions"><strong>Tap</strong> to expand · <strong>Swipe one post</strong> away to reveal the next</p>
           ${remainingPosts === 0 && !this.feedHasMore ? `<span class="wall-cleared-label">Wall cleared.</span>` : ""}
         </footer>
         ${this.lastDismissedPlanetPostId ? `
@@ -510,12 +494,6 @@ export class SocialPortal {
             <span>Post sent to orbit.</span>
             <button data-social-action="undo-planet-dismiss">Undo</button>
           </div>
-        ` : ""}
-        ${this.feedIsDemo ? `
-          <aside class="guest-demo-note">
-            <span>${guestMode ? "GUEST ACCESS" : "PROTOTYPE MODE"}</span>
-            <p>${guestMode ? "Test the wall without signing in." : "Your live wall is quiet, so demo blocks are filling the stacks."} Reactions and dismissed posts stay on this device.</p>
-          </aside>
         ` : ""}
       </section>
     `;
@@ -539,6 +517,14 @@ export class SocialPortal {
     }
     const viewed = this.viewedPlanetPostIds.has(post.id);
     const initial = post.author.displayName.slice(0, 1).toUpperCase() || "□";
+    const profilePhotoUrl = safeProfilePhotoUrl(post.author.profilePhotoPath);
+    const authorAvatar = `
+      <span class="planet-author-avatar" aria-hidden="true">
+        ${profilePhotoUrl
+          ? `<img src="${escapeAttribute(profilePhotoUrl)}" alt="" />`
+          : `<span>${escapeHtml(initial)}</span>`}
+      </span>
+    `;
     const preview = truncateText(post.body || (post.mediaPath ? "Shared a picture" : "Block Post"), 68);
     const stackDepth = Math.min(2, Math.max(0, stack.length - 1));
     const visual = demoPlanetVisual(post.id);
@@ -579,8 +565,8 @@ export class SocialPortal {
           aria-label="${escapeAttribute(`${post.author.displayName}: ${post.body || "Media post"}. Posted ${timeAgo(post.createdAt)}. Drag to an edge to dismiss.`)}"
         >
           ${media}
+          ${authorAvatar}
           <span class="planet-card-meta">
-            <span class="planet-author-mark">${escapeHtml(initial)}</span>
             <span class="planet-post-copy">
               <strong>${escapeHtml(post.author.displayName)}</strong>
               <span>${escapeHtml(preview)}</span>
@@ -1498,6 +1484,16 @@ function truncateText(value: string, maximum: number): string {
   const normalized = value.trim().replace(/\s+/g, " ");
   if (normalized.length <= maximum) return normalized;
   return `${normalized.slice(0, Math.max(0, maximum - 1)).trimEnd()}…`;
+}
+
+function safeProfilePhotoUrl(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
 }
 
 function wait(milliseconds: number): Promise<void> {
