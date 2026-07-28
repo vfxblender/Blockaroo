@@ -326,7 +326,7 @@ export class SocialPortal {
   private render(): void {
     this.mediaObserver?.disconnect();
     const guestMode = !this.account || this.account.isAnonymous;
-    const accountLabel = guestMode ? "Guest · Claim block" : this.account?.email ?? "Account";
+    const accountLabel = guestMode ? "Guest · Claim" : this.account?.email ?? "Account";
     const accountChip = guestMode
       ? `<button class="social-account-chip is-guest" data-social-action="claim-account">${escapeHtml(accountLabel)}</button>`
       : `<span class="social-account-chip">${escapeHtml(accountLabel)}</span>`;
@@ -567,13 +567,13 @@ export class SocialPortal {
           aria-label="${escapeAttribute(`${post.author.displayName}: ${post.body || "Media post"}. Posted ${timeAgo(post.createdAt)}. Drag to an edge to dismiss.`)}"
         >
           ${media}
-          <span class="planet-card-meta">
+          <span class="planet-card-meta ${mediaKind ? "" : "is-text-only"}">
             <span class="planet-author-block">
               ${authorAvatar}
               <strong>${escapeHtml(post.author.displayName)}</strong>
             </span>
             <span class="planet-post-copy">
-              <span>${escapeHtml(preview)}</span>
+              ${mediaKind ? `<span>${escapeHtml(preview)}</span>` : ""}
               <small>${timeAgo(post.createdAt)}</small>
             </span>
           </span>
