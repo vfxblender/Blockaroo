@@ -189,7 +189,6 @@ button { -webkit-tap-highlight-color: transparent; }
 .blockwall-controls button { padding: 9px 13px; border: 2px solid #172033; border-radius: 999px; background: #fff; color: #172033; cursor: pointer; font-size: .72rem; font-weight: 900; box-shadow: 3px 3px 0 #172033; }
 .blockwall-controls button:disabled { opacity: .4; cursor: default; box-shadow: none; }
 .wall-cleared-label { color: #697284; font-size: .7rem; font-weight: 850; }
-
 .planet-detail-backdrop { overflow: auto; }
 .planet-detail { width: min(780px,100%); max-height: calc(100dvh - 46px); overflow: auto; border: 6px solid #172033; border-radius: 24px; background: #fffdf8; color: #172033; box-shadow: 12px 12px 0 #172033; }
 .planet-detail > header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 19px; border-bottom: 1px solid #d8d9d5; }
