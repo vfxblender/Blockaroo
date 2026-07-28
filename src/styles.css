@@ -87,14 +87,15 @@ button { -webkit-tap-highlight-color: transparent; }
 .social-header nav button:hover { color: #141b2d; }
 .social-header nav button.is-active { color: #141b2d; border-bottom-color: #141b2d; }
 .social-header-actions { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
-.social-account-chip { max-width: 190px; overflow: hidden; padding: 8px 11px; border: 0; border-radius: 999px; background: #e7e4da; color: #596172; text-overflow: ellipsis; white-space: nowrap; font-size: .71rem; font-weight: 750; }
+.social-account-chip { max-width: 172px; overflow: hidden; padding: 7px 10px; border: 0; border-radius: 10px; background: #e7e4da; color: #596172; text-overflow: ellipsis; white-space: nowrap; font-size: .71rem; font-weight: 750; }
 .social-account-chip.is-guest { background: #172033; color: #fff; cursor: pointer; }
 .social-account-chip.is-guest:hover { background: #29354e; }
-.social-alerts-button { position: relative; width: 40px; height: 40px; flex: 0 0 40px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: #e7e4da; color: #596172; cursor: pointer; }
+.social-alerts-button { position: relative; width: 40px; height: 40px; flex: 0 0 40px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 10px; background: #e7e4da; color: #596172; cursor: pointer; }
 .social-alerts-button:hover, .social-alerts-button.is-active { background: #ffd166; color: #172033; }
 .social-alerts-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .social-alert-badge { position: absolute; top: -3px; right: -3px; min-width: 17px; height: 17px; padding: 0 4px; border: 2px solid #f9f8f4; border-radius: 999px; background: #ff6b6b; color: #fff; font-size: .58rem; font-weight: 900; line-height: 13px; }
-.social-close, .circle-close { width: 40px; height: 40px; padding: 0; border: 0; border-radius: 50%; background: #141b2d; color: #fff; cursor: pointer; font-size: 1.6rem; line-height: 1; }
+.social-close { width: 40px; height: 40px; padding: 0; border: 0; border-radius: 10px; background: #141b2d; color: #fff; cursor: pointer; font-size: 1.15rem; font-weight: 900; line-height: 1; }
+.circle-close { width: 40px; height: 40px; padding: 0; border: 0; border-radius: 50%; background: #141b2d; color: #fff; cursor: pointer; font-size: 1.6rem; line-height: 1; }
 .social-body { height: calc(100% - 78px); overflow: auto; overscroll-behavior: contain; }
 .portal-loading, .portal-empty { min-height: 65vh; display: grid; place-items: center; align-content: center; gap: 12px; padding: 30px; text-align: center; }
 .portal-loading p, .portal-empty p { max-width: 550px; margin: 0; color: #697284; line-height: 1.55; }
@@ -137,7 +138,7 @@ button { -webkit-tap-highlight-color: transparent; }
 
 .blockwall-layout { position: relative; min-height: 100%; display: grid; grid-template-rows: minmax(0,1fr) auto; padding: 12px clamp(18px,4vw,58px) 14px; overflow: hidden; background-color: #f0eee6; background-image: linear-gradient(rgba(23,32,51,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(23,32,51,.035) 1px,transparent 1px); background-size: 32px 32px; }
 .blockwall-layout::before { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at 50% 53%, rgba(255,209,102,.24), transparent 34%, rgba(23,32,51,.04) 34.2%, transparent 34.7%, transparent 53%, rgba(23,32,51,.035) 53.2%, transparent 53.7%); }
-.blockwall-post-button { min-height: 40px; padding: 9px 14px; border: 2px solid #172033; border-radius: 999px; cursor: pointer; font-weight: 900; }
+.blockwall-post-button { min-height: 40px; padding: 9px 14px; border: 2px solid #172033; border-radius: 10px; cursor: pointer; font-weight: 900; }
 .blockwall-post-button { display: inline-flex; align-items: center; gap: 5px; background: #ffd166; color: #172033; box-shadow: 3px 3px 0 #172033; }
 .blockwall-post-button span { font-size: 1.05rem; line-height: .8; }
 .planet-offline-note { position: absolute; z-index: 5; top: 12px; left: 50%; width: max-content; max-width: calc(100% - 24px); margin: 0; transform: translateX(-50%); padding: 7px 10px; border-radius: 999px; background: #ffe3ad; color: #714e00; font-size: .7rem; font-weight: 800; text-align: center; }
@@ -172,14 +173,16 @@ button { -webkit-tap-highlight-color: transparent; }
 .planet-media-label { position: absolute; z-index: 4; top: 8px; right: 8px; padding: 4px 6px; border-radius: 999px; background: rgba(11,16,32,.82); color: #fff; font-size: clamp(.42rem,.62vw,.58rem); font-weight: 950; letter-spacing: .08em; }
 .planet-play-mark { position: relative; z-index: 3; width: clamp(34px,4.5vw,54px); aspect-ratio: 1; display: grid; place-items: center; padding-left: 3px; border: 3px solid #fff; border-radius: 50%; background: rgba(11,16,32,.72); color: #fff; box-shadow: 0 8px 25px rgba(0,0,0,.2); font-size: clamp(.8rem,1.4vw,1.2rem); }
 .planet-text-preview { padding: clamp(13px,1.8vw,25px); background: linear-gradient(145deg,var(--post-color),#fff3c6); color: #172033; font-size: clamp(.82rem,1.35vw,1.25rem); font-weight: 850; line-height: 1.18; letter-spacing: -.025em; }
-.planet-card-meta { position: absolute; z-index: 6; inset: auto 0 0; min-width: 0; display: grid; grid-template-columns: clamp(38px,4.6vw,54px) minmax(0,1fr); align-items: end; gap: clamp(7px,.8vw,11px); padding: clamp(44px,5.2vw,70px) clamp(8px,1vw,12px) clamp(9px,1vw,13px); background: linear-gradient(to top,rgba(8,13,27,.97) 0%,rgba(8,13,27,.82) 58%,rgba(8,13,27,0) 100%); color: #fff; pointer-events: none; }
+.planet-card-meta { position: absolute; z-index: 6; inset: auto 0 0; min-width: 0; display: grid; grid-template-columns: clamp(38px,4.6vw,54px) minmax(0,1fr); align-items: end; gap: clamp(7px,.8vw,11px); padding: clamp(52px,6vw,82px) clamp(8px,1vw,12px) clamp(9px,1vw,13px); background: linear-gradient(to top,rgba(8,13,27,.98) 0%,rgba(8,13,27,.91) 54%,rgba(8,13,27,.46) 78%,rgba(8,13,27,0) 100%); color: #fff; pointer-events: none; }
 .planet-author-block { min-width: 0; display: grid; justify-items: center; align-content: end; gap: clamp(3px,.35vw,5px); }
 .planet-author-block > strong { max-width: 100%; overflow: hidden; color: #fff; text-overflow: ellipsis; white-space: nowrap; font-size: clamp(.5rem,.7vw,.68rem); line-height: 1.05; text-align: center; }
 .planet-author-avatar { position: relative; z-index: 8; width: clamp(30px,3.6vw,44px); aspect-ratio: 1; display: grid; place-items: center; overflow: hidden; border: 3px solid #fff; border-radius: clamp(6px,.7vw,9px); background: var(--post-color); color: #172033; box-shadow: 0 0 0 2px #172033,0 4px 12px rgba(0,0,0,.24); font-size: clamp(.65rem,1vw,.9rem); font-weight: 950; pointer-events: none; }
 .planet-author-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .planet-post-copy { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-end; gap: clamp(2px,.3vw,4px); }
-.planet-post-copy > span { display: -webkit-box; overflow: hidden; color: rgba(255,255,255,.9); -webkit-box-orient: vertical; -webkit-line-clamp: 3; font-size: clamp(.58rem,.82vw,.76rem); line-height: 1.2; }
+.planet-post-copy > span { display: -webkit-box; overflow: hidden; color: rgba(255,255,255,.98); -webkit-box-orient: vertical; -webkit-line-clamp: 4; font-size: clamp(.72rem,1vw,.9rem); font-weight: 750; line-height: 1.15; }
 .planet-post-copy small { align-self: flex-end; color: rgba(255,255,255,.64); font-size: clamp(.45rem,.62vw,.58rem); font-weight: 850; white-space: nowrap; }
+.planet-card-meta.is-text-only { padding-top: clamp(34px,4vw,54px); }
+.planet-card-meta.is-text-only .planet-post-copy { align-self: end; }
 .planet-stack-count { position: absolute; z-index: 9; right: -7px; bottom: -7px; min-width: 28px; height: 28px; display: grid; place-items: center; padding: 0 6px; border: 3px solid #172033; border-radius: 999px; background: #ffd166; color: #172033; box-shadow: 2px 2px 0 #172033; font-size: .65rem; font-weight: 950; pointer-events: none; }
 .planet-stack.is-empty { display: grid; place-items: center; opacity: .22; border: 3px dashed #697284; border-radius: clamp(12px,1.4vw,19px); }
 .planet-stack.is-empty i { width: 20%; aspect-ratio: 1; border: 3px solid #697284; border-radius: 5px; }
@@ -497,10 +500,10 @@ button.planet-detail-author { cursor: pointer; }
 
 @media (max-width: 620px) {
   .social-shell { border-left-width: 8px; border-right-width: 8px; }
-  .social-account-chip { max-width: 132px; padding: 7px 10px; }
-  .social-alerts-button { width: 34px; height: 34px; flex-basis: 34px; }
+  .social-account-chip { max-width: 116px; padding: 6px 8px; }
+  .social-alerts-button { width: 34px; height: 34px; flex-basis: 34px; border-radius: 8px; }
   .social-alerts-button svg { width: 18px; height: 18px; }
-  .social-close { width: 36px; height: 36px; font-size: 1.4rem; }
+  .social-close { width: 34px; height: 34px; border-radius: 8px; font-size: 1rem; }
   .hud { padding: 10px; }
   .brand { padding: 8px 10px; }
   .hint { display: none; }
@@ -517,13 +520,14 @@ button.planet-detail-author { cursor: pointer; }
   .planet-stack.depth-2::before { transform: translate(3px,5px) rotate(.7deg); }
   .planet-post { box-shadow: 3px 3px 0 #172033; }
   .planet-post.is-unread::after { left: 5px; top: 5px; width: 7px; height: 7px; border-width: 1px; }
-  .planet-card-meta { grid-template-columns: 36px minmax(0,1fr); gap: 6px; padding: 38px 7px 7px; }
+  .planet-card-meta { grid-template-columns: 36px minmax(0,1fr); gap: 6px; padding: 52px 7px 7px; }
   .planet-author-block { gap: 2px; }
   .planet-author-block > strong { font-size: .52rem; }
   .planet-author-avatar { width: 25px; border-width: 2px; border-radius: 5px; box-shadow: 0 0 0 2px #172033,0 3px 8px rgba(0,0,0,.2); font-size: .56rem; }
   .planet-post-copy { gap: 2px; }
-  .planet-post-copy > span { font-size: .56rem; line-height: 1.16; }
+  .planet-post-copy > span { font-size: clamp(.76rem,3.45vw,.875rem); font-weight: 750; line-height: 1.15; }
   .planet-post-copy small { font-size: .4rem; }
+  .planet-card-meta.is-text-only { padding-top: 28px; }
   .planet-text-preview { padding: 10px; font-size: .74rem; }
   .planet-media-label { top: 5px; right: 5px; padding: 3px 4px; font-size: .38rem; }
   .planet-play-mark { width: 31px; border-width: 2px; font-size: .68rem; }
