@@ -10,18 +10,14 @@ export interface BlockPlanetSlot {
 
 export type BlockPlanetArrowKey = "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight";
 
-// Eight visible stacks surround the permanent center core. A feed-sized batch
-// is dealt into these positions in layers so dismissing the top post reveals
-// another without downloading more data.
+// Four portrait stacks form a mobile-first 2×2 wall. A feed-sized batch is
+// dealt into these positions in layers so dismissing the top post reveals
+// another without downloading more media.
 export const BLOCK_PLANET_SLOTS: readonly BlockPlanetSlot[] = Object.freeze([
-  { column: 2, row: 1 },
-  { column: 3, row: 1 },
-  { column: 3, row: 2 },
-  { column: 3, row: 3 },
-  { column: 2, row: 3 },
-  { column: 1, row: 3 },
-  { column: 1, row: 2 },
   { column: 1, row: 1 },
+  { column: 2, row: 1 },
+  { column: 2, row: 2 },
+  { column: 1, row: 2 },
 ]);
 
 export function isBlockPlanetDismiss(deltaX: number, deltaY: number): boolean {
