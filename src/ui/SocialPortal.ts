@@ -568,9 +568,11 @@ export class SocialPortal {
         >
           ${media}
           <span class="planet-card-meta">
-            ${authorAvatar}
-            <span class="planet-post-copy">
+            <span class="planet-author-block">
+              ${authorAvatar}
               <strong>${escapeHtml(post.author.displayName)}</strong>
+            </span>
+            <span class="planet-post-copy">
               <span>${escapeHtml(preview)}</span>
               <small>${timeAgo(post.createdAt)}</small>
             </span>
