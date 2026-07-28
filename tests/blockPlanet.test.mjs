@@ -41,6 +41,14 @@ test("twenty posts are dealt beneath eight visible stack tops", () => {
   assert.equal(afterDismiss.flat().length, 18);
 });
 
+test("multiple feed batches remain one continuous eight-stack wall", () => {
+  const now = Date.parse("2026-07-27T12:00:00Z");
+  const posts = [...demoBlockPlanetPage(0, now), ...demoBlockPlanetPage(1, now)];
+  const stacks = buildBlockPlanetStacks(posts);
+  assert.deepEqual(stacks.map(stack => stack.length), [5, 5, 5, 5, 5, 5, 5, 5]);
+  assert.equal(stacks.flat().length, 40);
+});
+
 test("sending one post to orbit requires a deliberate drag", () => {
   assert.equal(isBlockPlanetDismiss(40, 40), false);
   assert.equal(isBlockPlanetDismiss(88, 0), true);
