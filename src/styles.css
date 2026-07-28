@@ -506,11 +506,11 @@ button.planet-detail-author { cursor: pointer; }
   .blockwall-heading-actions { align-items: center; }
   .blockwall-post-button { min-height: 32px; padding: 6px 9px; border-width: 2px; font-size: .66rem; }
   .planet-offline-note { top: 43px; font-size: .58rem; }
-  .block-planet-stage { width: min(calc(100vw - 12px),calc(56.25vh - 86px)); width: min(calc(100vw - 12px),calc(56.25dvh - 86px)); height: auto; max-width: none; margin-top: 4px; }
+  .block-planet-stage { width: min(calc(100% - 12px),calc(56.25vh - 86px)); width: min(calc(100% - 12px),calc(56.25dvh - 86px)); height: auto; max-width: none; margin-top: 4px; }
   .block-planet-grid { gap: 6px; }
   .planet-stack::before, .planet-stack::after, .planet-post { border-width: 3px; border-radius: 9px; }
-  .planet-stack.depth-1::after, .planet-stack.depth-2::after { transform: translate(3px,3px) rotate(1deg); }
-  .planet-stack.depth-2::before { transform: translate(6px,6px) rotate(1.8deg); }
+  .planet-stack.depth-1::after, .planet-stack.depth-2::after { transform: translate(2px,3px) rotate(.55deg); }
+  .planet-stack.depth-2::before { transform: translate(3px,5px) rotate(.7deg); }
   .planet-post { box-shadow: 3px 3px 0 #172033; }
   .planet-post.is-unread::after { left: 5px; top: 5px; width: 7px; height: 7px; border-width: 1px; }
   .planet-card-meta { grid-template-columns: 25px minmax(0,1fr); gap: 6px; padding: 31px 7px 7px; }
