@@ -330,6 +330,10 @@ export class SocialPortal {
     const accountChip = guestMode
       ? `<button class="social-account-chip is-guest" data-social-action="claim-account">${escapeHtml(accountLabel)}</button>`
       : `<span class="social-account-chip">${escapeHtml(accountLabel)}</span>`;
+    const alertCount = this.alertCount();
+    const postAction = this.tab === "feed"
+      ? `<button class="blockwall-post-button" data-social-action="new-post" aria-label="Create a Block Post"><span aria-hidden="true">＋</span> Post</button>`
+      : "";
     this.root.innerHTML = `
       <div class="social-shell">
         <header class="social-header">
@@ -339,10 +343,22 @@ export class SocialPortal {
             ${navButton("friends", "Friends", this.tab)}
             ${navButton("map", "Nashville", this.tab)}
             ${navButton("home", "Block Home", this.tab)}
-            ${navButton("alerts", "Alerts", this.tab, this.alertCount())}
           </nav>
-          ${accountChip}
-          <button class="social-close" data-social-action="close" aria-label="Close social portal">×</button>
+          <div class="social-header-actions">
+            ${accountChip}
+            ${postAction}
+            <button
+              class="social-alerts-button ${this.tab === "alerts" ? "is-active" : ""}"
+              data-social-tab="alerts"
+              aria-label="${alertCount ? `Alerts, ${alertCount} new` : "Alerts"}"
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
+              </svg>
+              ${alertCount ? `<span class="social-alert-badge">${alertCount}</span>` : ""}
+            </button>
+            <button class="social-close" data-social-action="close" aria-label="Close social portal">×</button>
+          </div>
         </header>
         <main class="social-body">${this.renderBody()}</main>
         ${this.renderModal()}
@@ -466,11 +482,6 @@ export class SocialPortal {
     const remainingPosts = stacks.reduce((total, stack) => total + stack.length, 0);
     return `
       <section class="blockwall-layout ${this.feedIsDemo ? "is-demo" : ""}">
-        <header class="blockwall-heading">
-          <div class="blockwall-heading-actions">
-            <button class="blockwall-post-button" data-social-action="new-post" aria-label="Create a Block Post"><span aria-hidden="true">＋</span> Post</button>
-          </div>
-        </header>
         ${this.setupError ? `<p class="planet-offline-note">Live posts are unavailable, so the guest prototype is running locally.</p>` : ""}
         <div
           class="block-planet-stage"
@@ -1321,12 +1332,14 @@ export class SocialPortal {
     const button = this.root.querySelector<HTMLButtonElement>('[data-social-tab="alerts"]');
     if (!button) return;
     const count = this.alertCount();
-    const current = button.querySelector("span");
+    const current = button.querySelector(".social-alert-badge");
+    button.setAttribute("aria-label", count ? `Alerts, ${count} new` : "Alerts");
     if (!count) {
       current?.remove();
       return;
     }
     const badge = current ?? document.createElement("span");
+    badge.className = "social-alert-badge";
     badge.textContent = String(count);
     if (!current) button.append(badge);
   }
@@ -1412,8 +1425,8 @@ export class SocialPortal {
   }
 }
 
-function navButton(tab: PortalTab, label: string, active: PortalTab, badge = 0): string {
-  return `<button data-social-tab="${tab}" class="${tab === active ? "is-active" : ""}">${label}${badge ? `<span>${badge}</span>` : ""}</button>`;
+function navButton(tab: PortalTab, label: string, active: PortalTab): string {
+  return `<button data-social-tab="${tab}" class="${tab === active ? "is-active" : ""}">${label}</button>`;
 }
 
 function isBlockPlanetArrowKey(value: string): value is BlockPlanetArrowKey {
