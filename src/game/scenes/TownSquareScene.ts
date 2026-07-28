@@ -459,6 +459,9 @@ export class TownSquareScene extends Phaser.Scene {
         }
       },
     });
+    if (new URLSearchParams(window.location.search).get("wall") === "guest") {
+      window.setTimeout(() => this.openSocialPortal(), 0);
+    }
     const stick = hud.querySelector<HTMLElement>(".joystick")!;
     const knob = stick.querySelector<HTMLElement>(".joystick-knob")!;
     let joystickPointer: number | null = null;
