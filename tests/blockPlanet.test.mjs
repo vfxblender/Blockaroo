@@ -7,6 +7,7 @@ import {
   hasDemoBlockPlanetPage,
   isBlockPlanetDismiss,
   nextBlockPlanetSlotIndex,
+  resolveBlockPlanetViewerStep,
 } from "../src/social/blockPlanet.ts";
 
 test("the BlockWall has eight unique 3x3 slots around one permanent center tile", () => {
@@ -61,4 +62,11 @@ test("arrow navigation moves to the nearest block in the requested direction", (
   const down = nextBlockPlanetSlotIndex(start, "ArrowDown");
   assert.deepEqual(BLOCK_PLANET_SLOTS[left], { column: 1, row: 1 });
   assert.deepEqual(BLOCK_PLANET_SLOTS[down], { column: 2, row: 3 });
+});
+
+test("the short-form viewer exits after its final post", () => {
+  const postIds = ["first", "middle", "last"];
+  assert.deepEqual(resolveBlockPlanetViewerStep(postIds, "first", 1), { kind: "post", postId: "middle" });
+  assert.deepEqual(resolveBlockPlanetViewerStep(postIds, "last", 1), { kind: "exit" });
+  assert.deepEqual(resolveBlockPlanetViewerStep(postIds, "first", -1), { kind: "stay" });
 });
