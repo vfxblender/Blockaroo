@@ -10,6 +10,11 @@ export interface BlockPlanetSlot {
 
 export type BlockPlanetArrowKey = "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight";
 
+export type BlockPlanetViewerStep =
+  | { kind: "post"; postId: string }
+  | { kind: "exit" }
+  | { kind: "stay" };
+
 // Eight portrait thumbnails surround a permanent center post button. A
 // feed-sized batch is dealt into these positions in layers so dismissing a
 // thumbnail reveals another without downloading more media.
@@ -70,6 +75,18 @@ export function nextBlockPlanetSlotIndex(
     }
   });
   return bestIndex;
+}
+
+export function resolveBlockPlanetViewerStep(
+  postIds: readonly string[],
+  currentPostId: string,
+  direction: -1 | 1,
+): BlockPlanetViewerStep {
+  const currentIndex = postIds.indexOf(currentPostId);
+  if (currentIndex < 0) return { kind: "stay" };
+  const nextPostId = postIds[currentIndex + direction];
+  if (nextPostId) return { kind: "post", postId: nextPostId };
+  return direction > 0 ? { kind: "exit" } : { kind: "stay" };
 }
 
 const DEMO_AUTHORS: ReadonlyArray<Pick<SocialProfile, "displayName" | "handle" | "blockColor">> = [

@@ -7,6 +7,7 @@ import {
   hasDemoBlockPlanetPage,
   isBlockPlanetDismiss,
   nextBlockPlanetSlotIndex,
+  resolveBlockPlanetViewerStep,
   type BlockPlanetArrowKey,
 } from "../social/blockPlanet";
 import type {
@@ -631,12 +632,12 @@ export class SocialPortal {
             <div><strong>Comments</strong><small>Stored on this device during the prototype.</small></div>
             <button data-social-action="close-planet-comments" aria-label="Close comments">×</button>
           </header>
-          <div class="planet-comment-list">
+          <div class="planet-comment-list" data-planet-comment-list aria-live="polite">
             ${comments.map(comment => `<p><strong>You</strong><span>${escapeHtml(comment)}</span></p>`).join("") || `<p class="planet-comments-empty">No comments yet. Start the conversation.</p>`}
           </div>
           <form class="planet-comment-form" data-social-form="planet-comment">
             <label for="planet-comment-input">Add a comment</label>
-            <div><input id="planet-comment-input" name="comment" maxlength="180" required placeholder="Say something…" autocomplete="off" /><button>Post</button></div>
+            <div><input id="planet-comment-input" name="comment" maxlength="180" required placeholder="Say something…" autocomplete="off" /><button type="submit">Post</button></div>
           </form>
         </aside>
       `
@@ -670,7 +671,7 @@ export class SocialPortal {
             </button>
             <button data-social-action="open-planet-comments" aria-expanded="${this.planetCommentsOpen}" aria-label="Open comments">
               <span aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v12H9l-5 4V4Z" /></svg></span>
-              <small>${comments.length}</small>
+              <small data-planet-comment-count>${comments.length}</small>
             </button>
           </aside>
           <nav class="planet-viewer-nav" aria-label="Move between posts">
@@ -1059,12 +1060,17 @@ export class SocialPortal {
     const data = new FormData(form);
     const submitter = event.submitter as HTMLElement | null;
     if (formName === "planet-comment" && this.selectedPlanetPostId) {
+      const input = form.elements.namedItem("comment") as HTMLInputElement | null;
       const comment = String(data.get("comment") ?? "").trim().replace(/\s+/g, " ").slice(0, 180);
       if (!comment) return;
       const comments = this.planetComments.get(this.selectedPlanetPostId) ?? [];
-      this.planetComments.set(this.selectedPlanetPostId, [...comments, comment]);
-      this.render();
-      requestAnimationFrame(() => this.root.querySelector<HTMLInputElement>("#planet-comment-input")?.focus());
+      const nextComments = [...comments, comment];
+      this.planetComments.set(this.selectedPlanetPostId, nextComments);
+      this.appendPlanetComment(comment, nextComments.length);
+      if (input) {
+        input.value = "";
+        input.focus({ preventScroll: true });
+      }
       return;
     }
     if (formName === "account") {
@@ -1259,6 +1265,23 @@ export class SocialPortal {
     return this.feed.filter(post => !this.dismissedPlanetPostIds.has(post.id));
   }
 
+  private appendPlanetComment(comment: string, commentCount: number): void {
+    const commentList = this.root.querySelector<HTMLElement>("[data-planet-comment-list]");
+    if (commentList) {
+      commentList.querySelector(".planet-comments-empty")?.remove();
+      const entry = document.createElement("p");
+      const author = document.createElement("strong");
+      const body = document.createElement("span");
+      author.textContent = "You";
+      body.textContent = comment;
+      entry.append(author, body);
+      commentList.append(entry);
+      commentList.scrollTop = commentList.scrollHeight;
+    }
+    const counter = this.root.querySelector<HTMLElement>("[data-planet-comment-count]");
+    if (counter) counter.textContent = String(commentCount);
+  }
+
   private async advancePlanetViewer(direction: -1 | 1): Promise<void> {
     if (this.modal !== "planet-post" || !this.selectedPlanetPostId || this.planetViewerAnimating) return;
     this.planetViewerAnimating = true;
@@ -1269,20 +1292,35 @@ export class SocialPortal {
     }
     try {
       let posts = this.planetViewerPosts();
-      let currentIndex = posts.findIndex(post => post.id === this.selectedPlanetPostId);
-      let nextPost = posts[currentIndex + direction];
-      if (!nextPost && direction > 0 && this.feedHasMore) {
+      let step = resolveBlockPlanetViewerStep(
+        posts.map(post => post.id),
+        this.selectedPlanetPostId,
+        direction,
+      );
+      if (step.kind === "exit" && this.feedHasMore) {
         await this.loadMoreFeed();
         posts = this.planetViewerPosts();
-        currentIndex = posts.findIndex(post => post.id === this.selectedPlanetPostId);
-        nextPost = posts[currentIndex + direction];
+        step = resolveBlockPlanetViewerStep(
+          posts.map(post => post.id),
+          this.selectedPlanetPostId,
+          direction,
+        );
       }
-      if (!nextPost) {
+      if (step.kind === "exit") {
+        this.modal = null;
+        this.selectedPlanetPostId = null;
+        this.planetCommentsOpen = false;
         this.render();
+        requestAnimationFrame(() => this.root.querySelector<HTMLElement>("[data-block-planet-stage]")?.focus());
         return;
       }
-      this.selectedPlanetPostId = nextPost.id;
-      this.viewedPlanetPostIds.add(nextPost.id);
+      if (step.kind === "stay") {
+        this.render();
+        requestAnimationFrame(() => this.root.querySelector<HTMLElement>("[data-planet-viewer-card]")?.focus());
+        return;
+      }
+      this.selectedPlanetPostId = step.postId;
+      this.viewedPlanetPostIds.add(step.postId);
       this.planetCommentsOpen = false;
       this.render();
       requestAnimationFrame(() => this.root.querySelector<HTMLElement>("[data-planet-viewer-card]")?.focus());
