@@ -1,7 +1,6 @@
 import type { PlayerIdentity } from "../game/types/world";
 import { SocialService } from "../services/SocialService";
 import {
-  BLOCK_PLANET_PAGE_SIZE,
   BLOCK_PLANET_SLOTS,
   buildBlockPlanetStacks,
   demoBlockPlanetPage,
@@ -35,6 +34,15 @@ interface BlockPlanetDrag {
   stage: HTMLElement;
 }
 
+interface BlockPlanetViewerDrag {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  deltaX: number;
+  deltaY: number;
+  card: HTMLElement;
+}
+
 interface SocialPortalActions {
   onIdentityChange(profile: SocialProfile): void;
   onConnectToFriend(userId: string): void;
@@ -64,11 +72,15 @@ export class SocialPortal {
   private viewedPlanetPostIds = new Set<string>();
   private likedPlanetPostIds = new Set<string>();
   private planetComments = new Map<string, string[]>();
+  private planetCommentsOpen = false;
   private dismissedPlanetPostIds = new Set<string>();
   private planetDrag: BlockPlanetDrag | null = null;
+  private planetViewerDrag: BlockPlanetViewerDrag | null = null;
   private planetAnimating = false;
   private planetDismissing = false;
   private planetForming = false;
+  private planetViewerAnimating = false;
+  private planetViewerWheelLocked = false;
   private suppressPlanetClickUntil = 0;
   private friends: FriendConnection[] = [];
   private mapPosts: SocialPost[] = [];
@@ -109,6 +121,7 @@ export class SocialPortal {
     this.root.addEventListener("pointerup", event => this.handlePlanetPointerEnd(event));
     this.root.addEventListener("pointercancel", event => this.handlePlanetPointerEnd(event));
     this.root.addEventListener("keydown", event => this.handlePlanetKeyDown(event));
+    this.root.addEventListener("wheel", event => this.handlePlanetViewerWheel(event), { passive: false });
     this.unsubscribeAuth = this.service.onAccountChange(() => void this.initialize());
     this.unsubscribePosts = this.service.subscribeToPosts(() => {
       if (!this.openState || this.tab !== "feed" || this.modal || this.account?.isAnonymous) return;
@@ -229,6 +242,8 @@ export class SocialPortal {
     if (!this.openState) return;
     this.openState = false;
     this.modal = null;
+    this.selectedPlanetPostId = null;
+    this.planetCommentsOpen = false;
     this.root.classList.remove("is-open");
     this.actions.onOpenChange(false);
     window.setTimeout(() => {
@@ -331,9 +346,6 @@ export class SocialPortal {
       ? `<button class="social-account-chip is-guest" data-social-action="claim-account">${escapeHtml(accountLabel)}</button>`
       : `<span class="social-account-chip">${escapeHtml(accountLabel)}</span>`;
     const alertCount = this.alertCount();
-    const postAction = this.tab === "feed"
-      ? `<button class="blockwall-post-button" data-social-action="new-post" aria-label="Create a Block Post"><span aria-hidden="true">＋</span> Post</button>`
-      : "";
     this.root.innerHTML = `
       <div class="social-shell">
         <header class="social-header">
@@ -346,7 +358,6 @@ export class SocialPortal {
           </nav>
           <div class="social-header-actions">
             ${accountChip}
-            ${postAction}
             <button
               class="social-alerts-button ${this.tab === "alerts" ? "is-active" : ""}"
               data-social-tab="alerts"
@@ -488,10 +499,20 @@ export class SocialPortal {
           data-block-planet-stage
           tabindex="0"
           role="region"
-          aria-label="BlockWall with four portrait post stacks."
+          aria-label="BlockWall with eight portrait post thumbnails around the add post tile."
         >
           <div class="block-planet-grid ${this.planetForming ? "is-forming" : ""}" data-block-planet-grid>
             ${cells}
+            <button
+              class="planet-core"
+              style="grid-column:2;grid-row:2;--core-color:${escapeAttribute(this.localIdentity.color)}"
+              data-social-action="new-post"
+              aria-label="Create a Block Post"
+            >
+              <span aria-hidden="true">＋</span>
+              <strong>ADD</strong>
+              <small>POST</small>
+            </button>
           </div>
         </div>
         <footer class="blockwall-controls">
@@ -527,7 +548,7 @@ export class SocialPortal {
           : `<span>${escapeHtml(initial)}</span>`}
       </span>
     `;
-    const preview = truncateText(post.body || (post.mediaPath ? "Shared a picture" : "Block Post"), 68);
+    const preview = truncateText(post.body || (post.mediaPath ? "Shared a picture" : "Block Post"), 52);
     const stackDepth = Math.min(2, Math.max(0, stack.length - 1));
     const visual = demoPlanetVisual(post.id);
     const mediaKind = post.mediaType === "gif"
@@ -564,18 +585,12 @@ export class SocialPortal {
           data-post-id="${escapeAttribute(post.id)}"
           data-planet-post
           data-planet-index="${slotIndex}"
-          aria-label="${escapeAttribute(`${post.author.displayName}: ${post.body || "Media post"}. Posted ${timeAgo(post.createdAt)}. Drag to an edge to dismiss.`)}"
+          aria-label="${escapeAttribute(`${post.author.displayName}: ${post.body || "Media post"}. Tap to open the post. Drag to replace this thumbnail.`)}"
         >
           ${media}
-          <span class="planet-card-meta ${mediaKind ? "" : "is-text-only"}">
-            <span class="planet-author-block">
-              ${authorAvatar}
-              <strong>${escapeHtml(post.author.displayName)}</strong>
-            </span>
-            <span class="planet-post-copy">
-              ${mediaKind ? `<span>${escapeHtml(preview)}</span>` : ""}
-              <small>${timeAgo(post.createdAt)}</small>
-            </span>
+          <span class="planet-thumbnail-author">
+            ${authorAvatar}
+            <strong>${escapeHtml(post.author.displayName)}</strong>
           </span>
         </button>
         ${stack.length > 1 ? `<span class="planet-stack-count" aria-hidden="true">+${stack.length - 1}</span>` : ""}
@@ -586,48 +601,84 @@ export class SocialPortal {
   private renderPlanetPostModal(): string {
     const post = this.findPlanetPost(this.selectedPlanetPostId);
     if (!post) return "";
-    const guestMode = !this.account || this.account.isAnonymous;
     const liked = this.likedPlanetPostIds.has(post.id);
     const comments = this.planetComments.get(post.id) ?? [];
     const demoVisual = demoPlanetVisual(post.id);
+    const initial = post.author.displayName.slice(0, 1).toUpperCase() || "□";
+    const profilePhotoUrl = safeProfilePhotoUrl(post.author.profilePhotoPath);
+    const authorAvatar = `
+      <span class="planet-viewer-avatar" aria-hidden="true">
+        ${profilePhotoUrl
+          ? `<img src="${escapeAttribute(profilePhotoUrl)}" alt="" />`
+          : `<span>${escapeHtml(initial)}</span>`}
+      </span>
+    `;
     const media = post.mediaPath
-      ? `<div class="planet-detail-media ${post.mediaType === "gif" ? "is-motion" : ""}"><div class="media-placeholder">Loading picture…</div><img data-post-media="${escapeAttribute(post.id)}" alt="Post by ${escapeAttribute(post.author.displayName)}" hidden />${post.mediaType === "gif" ? `<span class="planet-detail-media-label">GIF</span>` : ""}</div>`
+      ? `<div class="planet-viewer-media ${post.mediaType === "gif" ? "is-motion" : ""}"><div class="media-placeholder">Loading picture…</div><img data-post-media="${escapeAttribute(post.id)}" alt="Post by ${escapeAttribute(post.author.displayName)}" hidden />${post.mediaType === "gif" ? `<span class="planet-detail-media-label">GIF</span>` : ""}</div>`
       : demoVisual
-        ? `<div class="planet-detail-media planet-detail-demo-media demo-scene-${demoVisual.scene}">${demoVisual.kind === "video" ? `<span class="planet-detail-play" aria-hidden="true">▶</span>` : ""}<span class="planet-detail-media-label">${demoVisual.kind.toUpperCase()} DEMO</span></div>`
-        : "";
+        ? `<div class="planet-viewer-media planet-detail-demo-media demo-scene-${demoVisual.scene}">${demoVisual.kind === "video" ? `<span class="planet-detail-play" aria-hidden="true">▶</span>` : ""}<span class="planet-detail-media-label">${demoVisual.kind.toUpperCase()} DEMO</span></div>`
+        : `<div class="planet-viewer-media is-text-post"><p>${escapeHtml(post.body || "Block Post")}</p></div>`;
     const author = this.feedIsDemo
-      ? `<div class="planet-detail-author"><i style="--author-color:${escapeAttribute(post.author.blockColor)}"></i><span><strong>${escapeHtml(post.author.displayName)}</strong><small>@${escapeHtml(post.author.handle ?? "neighbor")} · ${timeAgo(post.createdAt)}</small></span></div>`
-      : `<button class="planet-detail-author" data-social-action="view-home" data-user-id="${escapeAttribute(post.authorId)}"><i style="--author-color:${escapeAttribute(post.author.blockColor)}"></i><span><strong>${escapeHtml(post.author.displayName)}</strong><small>${post.author.handle ? `@${escapeHtml(post.author.handle)} · ` : ""}${timeAgo(post.createdAt)}</small></span></button>`;
-    return `
-      <div class="social-modal-backdrop planet-detail-backdrop">
-        <section class="planet-detail" role="dialog" aria-modal="true" aria-label="Block Post by ${escapeAttribute(post.author.displayName)}">
+      ? `<div class="planet-viewer-author">${authorAvatar}<span><strong>${escapeHtml(post.author.displayName)}</strong><small>@${escapeHtml(post.author.handle ?? "neighbor")} · ${timeAgo(post.createdAt)}</small></span></div>`
+      : `<button class="planet-viewer-author" data-social-action="view-home" data-user-id="${escapeAttribute(post.authorId)}">${authorAvatar}<span><strong>${escapeHtml(post.author.displayName)}</strong><small>${post.author.handle ? `@${escapeHtml(post.author.handle)} · ` : ""}${timeAgo(post.createdAt)}</small></span></button>`;
+    const viewerPosts = this.planetViewerPosts();
+    const viewerIndex = Math.max(0, viewerPosts.findIndex(candidate => candidate.id === post.id));
+    const commentSheet = this.planetCommentsOpen
+      ? `
+        <button class="planet-comment-scrim" data-social-action="close-planet-comments" aria-label="Close comments"></button>
+        <aside class="planet-comment-sheet" data-planet-comment-sheet aria-label="Comments">
           <header>
-            ${author}
-            <button class="planet-detail-close" data-social-action="cancel-modal" aria-label="Close post">×</button>
+            <div><strong>Comments</strong><small>Stored on this device during the prototype.</small></div>
+            <button data-social-action="close-planet-comments" aria-label="Close comments">×</button>
           </header>
-          ${media}
-          ${post.body ? `<p class="planet-detail-body">${escapeHtml(post.body)}</p>` : ""}
-          ${post.locationLabel ? `<span class="planet-detail-location">⌖ ${escapeHtml(post.locationLabel)}</span>` : ""}
-          <div class="planet-reactions">
-            <button class="${liked ? "is-liked" : ""}" data-social-action="planet-like" aria-pressed="${liked}">
-              <span aria-hidden="true">${liked ? "♥" : "♡"}</span> ${liked ? "Liked" : "Like"}
-            </button>
-            <span>${comments.length} ${comments.length === 1 ? "comment" : "comments"}</span>
-          </div>
-          <div class="planet-comments">
-            ${comments.map(comment => `<p><strong>You</strong><span>${escapeHtml(comment)}</span></p>`).join("") || `<p class="planet-comments-empty">No prototype comments yet.</p>`}
+          <div class="planet-comment-list">
+            ${comments.map(comment => `<p><strong>You</strong><span>${escapeHtml(comment)}</span></p>`).join("") || `<p class="planet-comments-empty">No comments yet. Start the conversation.</p>`}
           </div>
           <form class="planet-comment-form" data-social-form="planet-comment">
-            <label for="planet-comment-input">Comment on this block</label>
-            <div><input id="planet-comment-input" name="comment" maxlength="180" required placeholder="Say something…" /><button>Post</button></div>
+            <label for="planet-comment-input">Add a comment</label>
+            <div><input id="planet-comment-input" name="comment" maxlength="180" required placeholder="Say something…" autocomplete="off" /><button>Post</button></div>
           </form>
-          <footer>
-            <p>${guestMode ? "Guest reactions stay on this device." : "Reactions are local while this prototype is being tested."}</p>
-            <div class="planet-detail-actions">
-              <button class="planet-detail-collapse" data-social-action="cancel-modal">Close</button>
-              <button class="planet-detail-orbit" data-social-action="dismiss-planet-post">Send to orbit <span aria-hidden="true">↗</span></button>
-            </div>
-          </footer>
+        </aside>
+      `
+      : "";
+    return `
+      <div class="social-modal-backdrop planet-detail-backdrop">
+        <section
+          class="planet-detail ${this.planetCommentsOpen ? "has-comments-open" : ""}"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Block Post by ${escapeAttribute(post.author.displayName)}"
+          style="--post-color:${escapeAttribute(post.author.blockColor)}"
+          data-planet-viewer-card
+          tabindex="0"
+        >
+          ${media}
+          <span class="planet-viewer-shade" aria-hidden="true"></span>
+          <span class="planet-viewer-counter">${viewerIndex + 1} / ${Math.max(1, viewerPosts.length)}</span>
+          <button class="planet-detail-close" data-social-action="cancel-modal" aria-label="Close post">×</button>
+          <div class="planet-viewer-copy">
+            ${author}
+            ${demoVisual || post.mediaPath
+              ? (post.body ? `<p>${escapeHtml(post.body)}</p>` : "")
+              : ""}
+            ${post.locationLabel ? `<span class="planet-detail-location">⌖ ${escapeHtml(post.locationLabel)}</span>` : ""}
+          </div>
+          <aside class="planet-viewer-actions" aria-label="Post actions">
+            <button class="${liked ? "is-liked" : ""}" data-social-action="planet-like" aria-pressed="${liked}" aria-label="${liked ? "Unlike post" : "Like post"}">
+              <span aria-hidden="true">${liked ? "♥" : "♡"}</span>
+              <small>${liked ? "1" : "0"}</small>
+            </button>
+            <button data-social-action="open-planet-comments" aria-expanded="${this.planetCommentsOpen}" aria-label="Open comments">
+              <span aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v12H9l-5 4V4Z" /></svg></span>
+              <small>${comments.length}</small>
+            </button>
+          </aside>
+          <nav class="planet-viewer-nav" aria-label="Move between posts">
+            <button data-social-action="previous-planet-post" aria-label="Previous post" ${viewerIndex === 0 ? "disabled" : ""}>↑</button>
+            <button data-social-action="next-planet-post" aria-label="Next post" ${viewerIndex === viewerPosts.length - 1 && !this.feedHasMore ? "disabled" : ""}>↓</button>
+          </nav>
+          <span class="planet-viewer-swipe-hint" aria-hidden="true">SWIPE ↑↓</span>
+          ${commentSheet}
         </section>
       </div>
     `;
@@ -813,6 +864,7 @@ export class SocialPortal {
     if (target.dataset.socialTab && isPortalTab(target.dataset.socialTab)) {
       this.modal = null;
       this.selectedPlanetPostId = null;
+      this.planetCommentsOpen = false;
       this.tab = target.dataset.socialTab;
       if (this.tab === "home") this.viewedHomeId = this.account?.userId ?? null;
       await this.loadCurrentTab();
@@ -843,7 +895,27 @@ export class SocialPortal {
       if (performance.now() < this.suppressPlanetClickUntil) return;
       this.selectedPlanetPostId = target.dataset.postId;
       this.viewedPlanetPostIds.add(target.dataset.postId);
+      this.planetCommentsOpen = false;
       this.modal = "planet-post";
+      this.render();
+      return;
+    }
+    if (action === "previous-planet-post") {
+      void this.advancePlanetViewer(-1);
+      return;
+    }
+    if (action === "next-planet-post") {
+      void this.advancePlanetViewer(1);
+      return;
+    }
+    if (action === "open-planet-comments" && this.selectedPlanetPostId) {
+      this.planetCommentsOpen = true;
+      this.render();
+      requestAnimationFrame(() => this.root.querySelector<HTMLInputElement>("#planet-comment-input")?.focus());
+      return;
+    }
+    if (action === "close-planet-comments") {
+      this.planetCommentsOpen = false;
       this.render();
       return;
     }
@@ -851,6 +923,7 @@ export class SocialPortal {
       const postId = this.selectedPlanetPostId;
       this.modal = null;
       this.selectedPlanetPostId = null;
+      this.planetCommentsOpen = false;
       this.render();
       await this.dismissPlanetPost(postId, 160, -50);
       return;
@@ -867,6 +940,7 @@ export class SocialPortal {
     if (action === "cancel-modal") {
       this.modal = null;
       this.selectedPlanetPostId = null;
+      this.planetCommentsOpen = false;
       this.render();
       return;
     }
@@ -881,6 +955,9 @@ export class SocialPortal {
         if (access !== "open") return;
       }
       this.viewedHomeId = userId;
+      this.modal = null;
+      this.selectedPlanetPostId = null;
+      this.planetCommentsOpen = false;
       this.tab = "home";
       await this.loadCurrentTab();
       return;
@@ -987,6 +1064,7 @@ export class SocialPortal {
       const comments = this.planetComments.get(this.selectedPlanetPostId) ?? [];
       this.planetComments.set(this.selectedPlanetPostId, [...comments, comment]);
       this.render();
+      requestAnimationFrame(() => this.root.querySelector<HTMLInputElement>("#planet-comment-input")?.focus());
       return;
     }
     if (formName === "account") {
@@ -1177,6 +1255,42 @@ export class SocialPortal {
     return this.feed.find(candidate => candidate.id === postId) ?? null;
   }
 
+  private planetViewerPosts(): SocialPost[] {
+    return this.feed.filter(post => !this.dismissedPlanetPostIds.has(post.id));
+  }
+
+  private async advancePlanetViewer(direction: -1 | 1): Promise<void> {
+    if (this.modal !== "planet-post" || !this.selectedPlanetPostId || this.planetViewerAnimating) return;
+    this.planetViewerAnimating = true;
+    const currentCard = this.root.querySelector<HTMLElement>("[data-planet-viewer-card]");
+    if (currentCard) {
+      currentCard.classList.add(direction > 0 ? "is-leaving-up" : "is-leaving-down");
+      await wait(150);
+    }
+    try {
+      let posts = this.planetViewerPosts();
+      let currentIndex = posts.findIndex(post => post.id === this.selectedPlanetPostId);
+      let nextPost = posts[currentIndex + direction];
+      if (!nextPost && direction > 0 && this.feedHasMore) {
+        await this.loadMoreFeed();
+        posts = this.planetViewerPosts();
+        currentIndex = posts.findIndex(post => post.id === this.selectedPlanetPostId);
+        nextPost = posts[currentIndex + direction];
+      }
+      if (!nextPost) {
+        this.render();
+        return;
+      }
+      this.selectedPlanetPostId = nextPost.id;
+      this.viewedPlanetPostIds.add(nextPost.id);
+      this.planetCommentsOpen = false;
+      this.render();
+      requestAnimationFrame(() => this.root.querySelector<HTMLElement>("[data-planet-viewer-card]")?.focus());
+    } finally {
+      this.planetViewerAnimating = false;
+    }
+  }
+
   private async dismissPlanetPost(
     postId: string,
     deltaX: number,
@@ -1198,6 +1312,7 @@ export class SocialPortal {
     this.dismissedPlanetPostIds.add(postId);
     this.modal = null;
     this.selectedPlanetPostId = null;
+    this.planetCommentsOpen = false;
     this.planetDismissing = false;
     this.render();
     const remainingPosts = buildBlockPlanetStacks(this.feed, this.dismissedPlanetPostIds)
@@ -1208,7 +1323,12 @@ export class SocialPortal {
   }
 
   private handlePlanetPointerDown(event: PointerEvent): void {
-    if (event.button !== 0 || this.planetAnimating || this.planetDismissing || this.modal) return;
+    if (event.button !== 0 || this.planetAnimating || this.planetDismissing) return;
+    if (this.modal === "planet-post") {
+      this.handlePlanetViewerPointerDown(event);
+      return;
+    }
+    if (this.modal) return;
     const post = (event.target as HTMLElement).closest<HTMLElement>("[data-planet-post]");
     const stage = post?.closest<HTMLElement>("[data-block-planet-stage]");
     const postId = post?.dataset.postId;
@@ -1230,6 +1350,10 @@ export class SocialPortal {
   }
 
   private handlePlanetPointerMove(event: PointerEvent): void {
+    if (this.planetViewerDrag?.pointerId === event.pointerId) {
+      this.handlePlanetViewerPointerMove(event);
+      return;
+    }
     const drag = this.planetDrag;
     if (!drag || drag.pointerId !== event.pointerId) return;
     drag.deltaX = event.clientX - drag.startX;
@@ -1246,6 +1370,10 @@ export class SocialPortal {
   }
 
   private handlePlanetPointerEnd(event: PointerEvent): void {
+    if (this.planetViewerDrag?.pointerId === event.pointerId) {
+      this.handlePlanetViewerPointerEnd(event);
+      return;
+    }
     const drag = this.planetDrag;
     if (!drag || drag.pointerId !== event.pointerId) return;
     this.planetDrag = null;
@@ -1267,12 +1395,88 @@ export class SocialPortal {
     post.style.removeProperty("--card-drag-rotate");
   }
 
+  private handlePlanetViewerPointerDown(event: PointerEvent): void {
+    if (
+      this.planetCommentsOpen
+      || this.planetViewerAnimating
+      || (event.target as HTMLElement).closest("button,input,form,[data-planet-comment-sheet]")
+    ) return;
+    const card = (event.target as HTMLElement).closest<HTMLElement>("[data-planet-viewer-card]");
+    if (!card) return;
+    this.planetViewerDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      deltaX: 0,
+      deltaY: 0,
+      card,
+    };
+    card.setPointerCapture?.(event.pointerId);
+  }
+
+  private handlePlanetViewerPointerMove(event: PointerEvent): void {
+    const drag = this.planetViewerDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    drag.deltaX = event.clientX - drag.startX;
+    drag.deltaY = event.clientY - drag.startY;
+    if (Math.hypot(drag.deltaX, drag.deltaY) <= 7) return;
+    event.preventDefault();
+    drag.card.classList.add("is-viewer-dragging");
+    drag.card.style.setProperty("--viewer-drag-y", `${drag.deltaY * .72}px`);
+  }
+
+  private handlePlanetViewerPointerEnd(event: PointerEvent): void {
+    const drag = this.planetViewerDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    this.planetViewerDrag = null;
+    drag.card.releasePointerCapture?.(event.pointerId);
+    drag.card.classList.remove("is-viewer-dragging");
+    const isVerticalSwipe = Math.abs(drag.deltaY) >= 62 && Math.abs(drag.deltaY) > Math.abs(drag.deltaX) * 1.1;
+    if (event.type !== "pointercancel" && isVerticalSwipe) {
+      void this.advancePlanetViewer(drag.deltaY < 0 ? 1 : -1);
+      return;
+    }
+    drag.card.style.removeProperty("--viewer-drag-y");
+  }
+
+  private handlePlanetViewerWheel(event: WheelEvent): void {
+    if (
+      this.modal !== "planet-post"
+      || this.planetCommentsOpen
+      || this.planetViewerAnimating
+      || this.planetViewerWheelLocked
+      || Math.abs(event.deltaY) < 24
+      || (event.target as HTMLElement).closest(".planet-comment-sheet")
+    ) return;
+    event.preventDefault();
+    this.planetViewerWheelLocked = true;
+    void this.advancePlanetViewer(event.deltaY > 0 ? 1 : -1);
+    window.setTimeout(() => {
+      this.planetViewerWheelLocked = false;
+    }, 430);
+  }
+
   private handlePlanetKeyDown(event: KeyboardEvent): void {
     if (event.key === "Escape" && this.modal) {
       event.preventDefault();
+      if (this.modal === "planet-post" && this.planetCommentsOpen) {
+        this.planetCommentsOpen = false;
+        this.render();
+        return;
+      }
       this.modal = null;
       this.selectedPlanetPostId = null;
+      this.planetCommentsOpen = false;
       this.render();
+      return;
+    }
+    if (
+      this.modal === "planet-post"
+      && !(event.target as HTMLElement).matches("input,textarea")
+      && (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "ArrowDown" || event.key === "PageDown")
+    ) {
+      event.preventDefault();
+      void this.advancePlanetViewer(event.key === "ArrowUp" || event.key === "PageUp" ? -1 : 1);
       return;
     }
     const current = (event.target as HTMLElement).closest<HTMLElement>("[data-planet-index]");
@@ -1412,6 +1616,7 @@ export class SocialPortal {
     this.feedPages.clear();
     this.planetUpdatesWaiting = false;
     this.selectedPlanetPostId = null;
+    this.planetCommentsOpen = false;
     this.viewedPlanetPostIds.clear();
     this.likedPlanetPostIds.clear();
     this.planetComments.clear();
