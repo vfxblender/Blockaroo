@@ -16,6 +16,11 @@ import { prepareJpeg } from "./image";
 import { createOrLoadProfile } from "./profileBootstrap";
 import { SocialMediaStore } from "./SocialMediaStore";
 import { clearCachedSession, getOrCreateAnonymousSession, supabase } from "./supabase";
+import {
+  isTesterAccountEmail,
+  normalizeAccountEmail,
+  parseTesterSession,
+} from "./testerAccount";
 
 interface ProfileRow {
   user_id: string;
@@ -245,13 +250,35 @@ export class SocialService {
 
   async sendExistingAccountLink(email: string): Promise<void> {
     this.requireClient();
-    const normalized = email.trim().toLowerCase();
+    const normalized = normalizeAccountEmail(email);
     if (!isEmail(normalized)) throw new Error("Enter a valid email address.");
     const { error } = await supabase!.auth.signInWithOtp({
       email: normalized,
       options: { emailRedirectTo: currentAuthRedirect(), shouldCreateUser: false },
     });
     if (error) throw error;
+  }
+
+  async signInExistingAccount(email: string): Promise<"tester" | "email-link"> {
+    this.requireClient();
+    const normalized = normalizeAccountEmail(email);
+    if (!isEmail(normalized)) throw new Error("Enter a valid email address.");
+    if (!isTesterAccountEmail(normalized)) {
+      await this.sendExistingAccountLink(normalized);
+      return "email-link";
+    }
+
+    await getOrCreateAnonymousSession();
+    const { data, error } = await supabase!.functions.invoke("tester-login", {
+      body: { email: normalized },
+    });
+    if (error) throw new Error("Tester sign-in is temporarily unavailable.");
+    const session = parseTesterSession(data);
+    if (!session) throw new Error("That tester address is not active.");
+    const { error: sessionError } = await supabase!.auth.setSession(session);
+    if (sessionError) throw sessionError;
+    clearCachedSession();
+    return "tester";
   }
 
   async signOutToGuest(): Promise<void> {
