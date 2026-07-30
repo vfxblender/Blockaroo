@@ -31,6 +31,7 @@ jobs:
           version: latest
       - run: supabase link --project-ref gjgeairzynwblfrpojyc --password "$SUPABASE_DB_PASSWORD"
       - run: supabase db push
+      - run: supabase functions deploy tester-login
 
   world-worker:
     needs: supabase

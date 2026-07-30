@@ -1403,12 +1403,23 @@ export class SocialPortal {
       const email = String(data.get("email") ?? "");
       const existing = submitter?.dataset.accountIntent === "existing";
       try {
-        this.profile = await this.service.acceptSocialTerms();
-        if (existing) await this.service.sendExistingAccountLink(email);
-        else await this.service.requestAccountEmail(email);
-        this.accountMessage = existing
-          ? "Check your email to sign in. This page can stay open."
-          : "Check your email to secure this exact block.";
+        if (existing) {
+          const mode = await this.service.signInExistingAccount(email);
+          if (mode === "tester") {
+            this.modal = null;
+            this.accountMessage = "";
+            this.loading = true;
+            this.render();
+            await this.initialize();
+            this.actions.onNotice("Tester account signed in.");
+            return;
+          }
+          this.accountMessage = "Check your email to sign in. This page can stay open.";
+        } else {
+          this.profile = await this.service.acceptSocialTerms();
+          await this.service.requestAccountEmail(email);
+          this.accountMessage = "Check your email to secure this exact block.";
+        }
       } catch (error) {
         this.accountMessage = errorMessage(error);
       }

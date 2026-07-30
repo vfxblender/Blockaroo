@@ -1,1 +1,4 @@
 project_id = "gjgeairzynwblfrpojyc"
+
+[functions.tester-login]
+verify_jwt = true
