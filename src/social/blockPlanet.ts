@@ -15,9 +15,9 @@ export type BlockPlanetViewerStep =
   | { kind: "exit" }
   | { kind: "stay" };
 
-// Eight portrait thumbnails surround a permanent center post button. A
-// feed-sized batch is dealt into these positions in layers so dismissing a
-// thumbnail reveals another without downloading more media.
+// Eight portrait thumbnails surround a permanent center post button. Each
+// visible stack belongs to one friend. Extra friends queue behind those eight,
+// so a prolific poster never occupies multiple wall slots.
 export const BLOCK_PLANET_SLOTS: readonly BlockPlanetSlot[] = Object.freeze([
   { column: 2, row: 1 },
   { column: 3, row: 1 },
@@ -38,9 +38,16 @@ export function buildBlockPlanetStacks(
   dismissedPostIds: ReadonlySet<string> = new Set(),
 ): SocialPost[][] {
   const stacks = BLOCK_PLANET_SLOTS.map(() => [] as SocialPost[]);
-  posts.forEach((post, index) => {
-    if (dismissedPostIds.has(post.id)) return;
-    stacks[index % BLOCK_PLANET_SLOTS.length]!.push(post);
+  const authorGroups = new Map<string, SocialPost[]>();
+  for (const post of posts) {
+    const group = authorGroups.get(post.authorId);
+    if (group) group.push(post);
+    else authorGroups.set(post.authorId, [post]);
+  }
+  [...authorGroups.values()].forEach((group, index) => {
+    stacks[index % BLOCK_PLANET_SLOTS.length]!.push(
+      ...group.filter(post => !dismissedPostIds.has(post.id)),
+    );
   });
   return stacks;
 }

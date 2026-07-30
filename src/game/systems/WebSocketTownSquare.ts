@@ -12,7 +12,7 @@ import {
   type ServerControlMessage,
 } from "../../../shared/worldProtocol";
 import { WORLD } from "../config";
-import type { PlayerIdentity } from "../types/world";
+import type { PlayerIdentity, WorldLocation } from "../types/world";
 import { getOrCreateAnonymousSession } from "../../services/supabase";
 import { CloudflarePhotoStore } from "../../services/CloudflarePhotoStore";
 import { ServerClock } from "./ServerClock";
@@ -60,6 +60,7 @@ export class WebSocketTownSquare implements TownSquareTransport {
   constructor(
     private readonly endpoint: string,
     private readonly callbacks: TownSquareCallbacks,
+    private readonly location: WorldLocation,
   ) {
     this.photos = new CloudflarePhotoStore(endpoint);
   }
@@ -89,7 +90,7 @@ export class WebSocketTownSquare implements TownSquareTransport {
     const ticket = await this.requestTicket(session.access_token);
     if (generation !== this.generation) return this.connectionId;
 
-    const socketUrl = new URL(`${this.endpoint.replace(/\/$/, "")}/world/${WORLD.cityId}/${WORLD.spaceId}`);
+    const socketUrl = new URL(`${this.endpoint.replace(/\/$/, "")}/world/${this.location.cityId}/${this.location.spaceId}`);
     socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
     socketUrl.searchParams.set("ticket", ticket);
     const socket = new WebSocket(socketUrl);
@@ -283,7 +284,7 @@ export class WebSocketTownSquare implements TownSquareTransport {
     const response = await fetch(`${this.endpoint.replace(/\/$/, "")}/session`, {
       method: "POST",
       headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ cityId: WORLD.cityId, spaceId: WORLD.spaceId }),
+      body: JSON.stringify({ cityId: this.location.cityId, spaceId: this.location.spaceId }),
     });
     const result = await response.json() as SessionTicketResponse;
     if (!response.ok || !result.ticket) throw new Error(result.error || "The world server rejected the Supabase session.");

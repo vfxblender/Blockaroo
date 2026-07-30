@@ -1,4 +1,10 @@
-import type { PlayerIdentity } from "../game/types/world";
+import {
+  PUBLIC_PORTAL_ROOMS,
+  homeSpaceId,
+  isPortalRoomId,
+  portalRoom,
+} from "../../shared/portalRooms";
+import type { PlayerIdentity, WorldLocation } from "../game/types/world";
 import { SocialService } from "../services/SocialService";
 import {
   BLOCK_PLANET_SLOTS,
@@ -10,10 +16,17 @@ import {
   resolveBlockPlanetViewerStep,
   type BlockPlanetArrowKey,
 } from "../social/blockPlanet";
+import {
+  buildNeighborhoodThreads,
+  recentHouseBlocks,
+  type NeighborhoodThread,
+} from "../social/neighborhood";
 import type {
   BlockHome,
+  DirectMessage,
   FriendConnection,
   HomeInvitation,
+  PortalSnapshot,
   SocialAccount,
   SocialPost,
   SocialProfile,
@@ -51,9 +64,11 @@ interface SocialPortalActions {
   onNotice(message: string): void;
   onAccountReady(): void;
   onBlockedUsersChange(userIds: string[]): void;
+  currentLocation(): WorldLocation;
+  onTravel(location: WorldLocation): Promise<void>;
 }
 
-const MAP_LOCATIONS = ["", "Town Square", "Downtown", "East Nashville", "The Gulch", "Centennial Park"];
+const MAP_LOCATIONS = ["", ...PUBLIC_PORTAL_ROOMS.map(room => room.label)];
 const FEED_PAGE_SIZE = 20;
 
 export class SocialPortal {
@@ -84,6 +99,11 @@ export class SocialPortal {
   private planetViewerWheelLocked = false;
   private suppressPlanetClickUntil = 0;
   private friends: FriendConnection[] = [];
+  private directMessages: DirectMessage[] = [];
+  private expandedNeighborId: string | null = null;
+  private neighborSearchQuery = "";
+  private neighborSearchResults: SocialProfile[] = [];
+  private portalSnapshot: PortalSnapshot | null = null;
   private mapPosts: SocialPost[] = [];
   private home: BlockHome | null = null;
   private invitations: HomeInvitation[] = [];
@@ -101,6 +121,7 @@ export class SocialPortal {
   private unsubscribeAuth: (() => void) | null = null;
   private unsubscribePosts: (() => void) | null = null;
   private unsubscribeAlerts: (() => void) | null = null;
+  private unsubscribeMessages: (() => void) | null = null;
   private avatarRect: DOMRect | null = null;
   private accent = "#ff6b6b";
   private initializeGeneration = 0;
@@ -161,6 +182,11 @@ export class SocialPortal {
       if (!this.account.isAnonymous && this.profileReady()) {
         await this.ensureOwnHome();
         if (generation !== this.initializeGeneration) return;
+        await this.startMessageSubscription();
+        if (generation !== this.initializeGeneration) return;
+      } else {
+        this.unsubscribeMessages?.();
+        this.unsubscribeMessages = null;
       }
       const nextAccountKey = this.accountStateKey();
       const worldAccountChanged = this.worldAccountKey !== null && this.worldAccountKey !== nextAccountKey;
@@ -256,6 +282,7 @@ export class SocialPortal {
     this.unsubscribeAuth?.();
     this.unsubscribePosts?.();
     this.unsubscribeAlerts?.();
+    this.unsubscribeMessages?.();
     this.mediaObserver?.disconnect();
     this.mediaObserver = null;
     for (const url of this.mediaUrls.values()) URL.revokeObjectURL(url);
@@ -274,6 +301,28 @@ export class SocialPortal {
       this.prepareDemoPlanet(0);
       this.loading = false;
       this.render();
+      return;
+    }
+    if (this.tab === "map") {
+      this.loading = true;
+      this.render();
+      try {
+        const [snapshot, friends] = await Promise.all([
+          this.service.loadPortalSnapshot(),
+          this.account?.isAnonymous === false && this.profileReady()
+            ? this.service.loadFriends()
+            : Promise.resolve(this.friends),
+        ]);
+        if (generation !== this.loadGeneration) return;
+        this.portalSnapshot = snapshot;
+        this.friends = friends;
+      } catch (error) {
+        if (generation === this.loadGeneration) this.actions.onNotice(errorMessage(error));
+      } finally {
+        if (generation !== this.loadGeneration) return;
+        this.loading = false;
+        this.render();
+      }
       return;
     }
     if (this.setupError) {
@@ -304,14 +353,15 @@ export class SocialPortal {
         this.planetUpdatesWaiting = false;
       }
       if (tab === "friends") {
-        const friends = await this.service.loadFriends();
+        const [friends, messages, snapshot] = await Promise.all([
+          this.service.loadFriends(),
+          this.service.loadDirectMessages(),
+          this.service.loadPortalSnapshot(),
+        ]);
         if (generation !== this.loadGeneration) return;
         this.friends = friends;
-      }
-      if (tab === "map") {
-        const mapPosts = await this.service.loadMapPosts();
-        if (generation !== this.loadGeneration) return;
-        this.mapPosts = mapPosts;
+        this.directMessages = messages;
+        this.portalSnapshot = snapshot;
       }
       if (tab === "home") {
         const home = await this.service.loadHome(viewedHomeId ?? this.account.userId);
@@ -319,15 +369,17 @@ export class SocialPortal {
         this.home = home;
       }
       if (tab === "alerts") {
-        const [friends, invitations, blockedProfiles] = await Promise.all([
+        const [friends, invitations, blockedProfiles, messages] = await Promise.all([
           this.service.loadFriends(),
           this.service.loadHomeInvitations(),
           this.service.loadBlockedProfiles(),
+          this.service.loadDirectMessages(),
         ]);
         if (generation !== this.loadGeneration) return;
         this.friends = friends;
         this.invitations = invitations;
         this.blockedProfiles = blockedProfiles;
+        this.directMessages = messages;
       }
     } catch (error) {
       if (generation !== this.loadGeneration) return;
@@ -353,8 +405,8 @@ export class SocialPortal {
           <div class="social-wordmark"><span class="eyebrow">YOUR BLOCK</span><strong>BLOCKAROO</strong></div>
           <nav aria-label="Social portal">
             ${navButton("feed", "Wall", this.tab)}
-            ${navButton("friends", "Friends", this.tab)}
-            ${navButton("map", "Nashville", this.tab)}
+            ${navButton("friends", "Neighborhood", this.tab)}
+            ${navButton("map", "Portal", this.tab)}
             ${navButton("home", "Block Home", this.tab)}
           </nav>
           <div class="social-header-actions">
@@ -382,13 +434,13 @@ export class SocialPortal {
   private renderBody(): string {
     if (this.loading) return `<div class="portal-loading"><span class="block-loader"></span><p>Opening your block…</p></div>`;
     if (this.tab === "feed") return this.renderFeed();
+    if (this.tab === "map") return this.renderMap();
     if (this.setupError) {
       return `<div class="portal-empty"><span class="empty-glyph">!</span><h1>The social layer could not open.</h1><p>${escapeHtml(this.setupError)}</p><p>Town Square still works. Check the Supabase configuration or migration, then try again.</p><button class="primary-action" data-social-action="retry-setup">Try again</button></div>`;
     }
     if (!this.account || this.account.isAnonymous) return this.renderGuestFeatureGate();
     if (!this.profileReady()) return this.renderConsentGate();
     if (this.tab === "friends") return this.renderFriends();
-    if (this.tab === "map") return this.renderMap();
     if (this.tab === "home") return this.renderHome();
     return this.renderAlerts();
   }
@@ -420,13 +472,29 @@ export class SocialPortal {
   }
 
   private renderGuestFeatureGate(): string {
-    const feature = this.tab === "friends"
-      ? "Friends"
-      : this.tab === "map"
-        ? "the live Nashville map"
-        : this.tab === "home"
-          ? "a permanent Block Home"
-          : "alerts";
+    if (this.tab === "friends") {
+      return `
+        <section class="neighborhood-guest">
+          <div class="section-heading">
+            <span class="eyebrow">YOUR PEOPLE LIVE HERE</span>
+            <h1>Neighborhood</h1>
+            <p>Search friends, recover your conversations, and visit their Block Homes after you sign in.</p>
+          </div>
+          <label class="neighborhood-search is-disabled">
+            <span aria-hidden="true">⌕</span>
+            <input disabled placeholder="Sign in to find friends" />
+          </label>
+          <div class="guest-street-preview" aria-hidden="true">
+            <div><span></span><i></i><strong>Private chats</strong></div>
+            <div><span></span><i></i><strong>Friend homes</strong></div>
+            <div><span></span><i></i><strong>Join friends</strong></div>
+          </div>
+          <button class="primary-action" data-social-action="claim-account">Sign in or create account</button>
+          <small>Messages are stored with your account and return when you sign back in.</small>
+        </section>
+      `;
+    }
+    const feature = this.tab === "home" ? "a permanent Block Home" : "alerts";
     return `
       <section class="guest-feature-gate">
         <div class="guest-gate-block" style="--guest-color:${escapeAttribute(this.localIdentity.color)}"><span>□</span></div>
@@ -713,14 +781,135 @@ export class SocialPortal {
   }
 
   private renderFriends(): string {
-    const accepted = this.friends.filter(friend => friend.status === "accepted");
     const pending = this.friends.filter(friend => friend.status !== "accepted");
+    const threads = buildNeighborhoodThreads(
+      this.friends,
+      this.directMessages,
+      this.account?.userId ?? "",
+    );
     return `
-      <section class="friends-layout">
-        <div class="section-heading"><span class="eyebrow">YOUR PEOPLE</span><h1>Connections made in the city.</h1><p>Talk and play first. Add people worth seeing again.</p></div>
-        ${pending.length ? `<div class="friend-section"><h2>Requests</h2>${pending.map(friend => this.friendCard(friend)).join("")}</div>` : ""}
-        <div class="friend-section"><h2>Friends · ${accepted.length}</h2>${accepted.length ? accepted.map(friend => this.friendCard(friend)).join("") : `<div class="portal-empty compact"><p>No accepted friends yet. Meet somebody in Town Square and send a request from their block.</p></div>`}</div>
+      <section class="neighborhood-layout">
+        <div class="section-heading neighborhood-heading">
+          <span class="eyebrow">YOUR PRIVATE STREET</span>
+          <h1>Neighborhood</h1>
+          <p>Every property is one friendship. Open a house to chat, visit, or jump to where they are.</p>
+        </div>
+        <form class="neighborhood-search" data-social-form="neighbor-search">
+          <span aria-hidden="true">⌕</span>
+          <input name="query" value="${escapeAttribute(this.neighborSearchQuery)}" minlength="2" maxlength="40" autocomplete="off" placeholder="Search by name or @handle" aria-label="Search for friends" />
+          <button>Search</button>
+        </form>
+        ${this.renderNeighborSearchResults()}
+        ${pending.length ? `<div class="friend-section neighborhood-requests"><h2>Requests</h2>${pending.map(friend => this.friendCard(friend)).join("")}</div>` : ""}
+        <div class="neighborhood-street">
+          <div class="street-label"><span>MY STREET</span><small>${threads.length} ${threads.length === 1 ? "home" : "homes"}</small></div>
+          ${threads.length
+            ? threads.map((thread, index) => this.renderNeighborProperty(thread, index)).join("")
+            : `<div class="portal-empty compact neighborhood-empty"><span class="empty-glyph">⌂</span><p>Your street is empty. Search for somebody you know or meet people in Town Square.</p></div>`}
+        </div>
       </section>
+    `;
+  }
+
+  private renderNeighborSearchResults(): string {
+    if (!this.neighborSearchQuery) return "";
+    if (!this.neighborSearchResults.length) {
+      return `<div class="neighbor-search-results"><p>No people matched “${escapeHtml(this.neighborSearchQuery)}.”</p><button type="button" data-social-action="clear-neighbor-search">Clear</button></div>`;
+    }
+    return `
+      <div class="neighbor-search-results">
+        <header><strong>People</strong><button type="button" data-social-action="clear-neighbor-search">Clear</button></header>
+        ${this.neighborSearchResults.map(profile => {
+          const relationship = this.friends.find(friend => friend.userId === profile.userId);
+          const action = relationship?.status === "accepted"
+            ? `<button data-social-action="toggle-neighbor" data-user-id="${escapeAttribute(profile.userId)}">Open chat</button>`
+            : relationship?.status === "pending-outgoing"
+              ? `<span>Request sent</span>`
+              : relationship?.status === "pending-incoming"
+                ? `<button data-social-action="accept-friend" data-user-id="${escapeAttribute(profile.userId)}">Accept</button>`
+                : `<button class="primary-small" data-social-action="add-neighbor" data-user-id="${escapeAttribute(profile.userId)}">Add neighbor</button>`;
+          return `
+            <article>
+              <i style="--friend-color:${escapeAttribute(profile.blockColor)}"></i>
+              <span><strong>${escapeHtml(profile.displayName)}</strong><small>${profile.handle ? `@${escapeHtml(profile.handle)}` : "Blockaroo neighbor"}</small></span>
+              ${action}
+            </article>
+          `;
+        }).join("")}
+      </div>
+    `;
+  }
+
+  private renderNeighborProperty(thread: NeighborhoodThread, index: number): string {
+    const friend = thread.friend;
+    const expanded = this.expandedNeighborId === friend.userId;
+    const room = this.portalSnapshot?.rooms.find(candidate => candidate.friendUserIds.includes(friend.userId));
+    const lastMessage = thread.lastMessage;
+    const lastCopy = lastMessage?.body
+      ?? (lastMessage?.ciphertext ? "Encrypted message" : "No messages yet—say hello.");
+    const status = room?.label
+      ?? (isRecentlyOnline(friend.profile.lastSeenAt) ? "Online recently" : "Offline");
+    const houseBlocks = recentHouseBlocks(thread.messages, 10);
+    return `
+      <article class="neighbor-property ${expanded ? "is-expanded" : ""} ${thread.unreadCount ? "has-unread" : ""}" data-neighbor-property="${escapeAttribute(friend.userId)}">
+        <button class="neighbor-property-summary" data-social-action="toggle-neighbor" data-user-id="${escapeAttribute(friend.userId)}" aria-expanded="${expanded}">
+          <span class="street-number">${String(index + 1).padStart(2, "0")}</span>
+          <span class="neighbor-property-copy">
+            <span class="neighbor-name-line"><i style="--friend-color:${escapeAttribute(friend.profile.blockColor)}"></i><strong>${escapeHtml(friend.profile.displayName)}</strong>${thread.unreadCount ? `<b>${thread.unreadCount}</b>` : ""}</span>
+            <span class="neighbor-last-message">${escapeHtml(truncateText(lastCopy, 64))}</span>
+            <small>${escapeHtml(status)}${lastMessage ? ` · ${timeAgo(lastMessage.createdAt)}` : ""}</small>
+          </span>
+          ${this.renderHouseShell(friend.profile, thread.unreadCount > 0, false)}
+        </button>
+        ${expanded ? `
+          <div class="neighbor-property-open">
+            <section class="neighbor-chat-panel" aria-label="Private chat with ${escapeAttribute(friend.profile.displayName)}">
+              <header>
+                <div><span>PRIVATE CHAT</span><strong>${escapeHtml(friend.profile.displayName)}</strong></div>
+                <div>
+                  ${room ? `<button data-social-action="travel-room" data-room-id="${escapeAttribute(room.id)}">Join in ${escapeHtml(room.label)}</button>` : ""}
+                  <button data-social-action="knock-home" data-user-id="${escapeAttribute(friend.userId)}">Visit home</button>
+                </div>
+              </header>
+              <div class="neighbor-message-list" data-direct-message-list="${escapeAttribute(friend.userId)}" aria-live="polite">
+                ${thread.messages.length
+                  ? thread.messages.slice(-80).map(message => this.renderDirectMessage(message)).join("")
+                  : `<p class="neighbor-chat-empty">This is the start of your street together.</p>`}
+              </div>
+              <form class="neighbor-message-form" data-social-form="direct-message" data-user-id="${escapeAttribute(friend.userId)}">
+                <label for="direct-message-${escapeAttribute(friend.userId)}">Message ${escapeHtml(friend.profile.displayName)}</label>
+                <div><input id="direct-message-${escapeAttribute(friend.userId)}" name="message" maxlength="2000" autocomplete="off" enterkeyhint="send" placeholder="Say something…" required /><button>Send</button></div>
+              </form>
+            </section>
+            <aside class="neighbor-house-panel" style="--house-color:${escapeAttribute(friend.profile.blockColor)}">
+              <span class="house-owner">${escapeHtml(friend.profile.displayName)}’s Block Home</span>
+              ${this.renderHouseShell(friend.profile, thread.unreadCount > 0, true)}
+              <div class="house-message-blocks" data-house-message-blocks="${escapeAttribute(friend.userId)}" aria-label="Latest private message blocks">
+                ${houseBlocks.map(message => `<i class="${message.senderId === this.account?.userId ? "is-mine" : "is-theirs"}" title="${escapeAttribute(message.body ?? "Encrypted message")}"></i>`).join("")}
+              </div>
+              <p>Only you and ${escapeHtml(friend.profile.displayName)} can see these message blocks.</p>
+            </aside>
+          </div>
+        ` : ""}
+      </article>
+    `;
+  }
+
+  private renderHouseShell(profile: SocialProfile, unread: boolean, large: boolean): string {
+    return `
+      <span class="property-house ${large ? "is-large" : ""} ${unread ? "is-lit" : ""}" style="--house-color:${escapeAttribute(profile.blockColor)}" aria-hidden="true">
+        <i class="house-roof"></i><i class="house-body"></i><i class="house-door"></i><i class="house-window"></i><i class="house-mailbox"></i>
+      </span>
+    `;
+  }
+
+  private renderDirectMessage(message: DirectMessage): string {
+    const mine = message.senderId === this.account?.userId;
+    const copy = message.body ?? (message.ciphertext ? "Encrypted message" : "Message unavailable");
+    return `
+      <p class="neighbor-message ${mine ? "is-mine" : "is-theirs"}" data-message-id="${escapeAttribute(message.id)}">
+        <span>${escapeHtml(copy)}</span><small>${formatMessageTime(message.createdAt)}${mine && message.readAt ? " · Read" : ""}</small>
+      </p>
     `;
   }
 
@@ -742,24 +931,57 @@ export class SocialPortal {
   }
 
   private renderMap(): string {
-    const pins = this.mapPosts.map((post, index) => {
-      const position = pinPosition(post.locationLabel ?? "", index);
-      return `<button class="map-pin" style="left:${position.x}%;top:${position.y}%;--pin-color:${escapeAttribute(post.author.blockColor)}" data-social-action="map-post" data-post-id="${post.id}" aria-label="${escapeAttribute(post.author.displayName)} posted from ${escapeAttribute(post.locationLabel ?? "Nashville")}"><i></i><span>${escapeHtml(post.author.displayName)}</span></button>`;
-    }).join("");
-    const cards = this.mapPosts.map(post => this.postCard(post)).join("");
+    const snapshot = this.portalSnapshot ?? {
+      cityId: "nashville",
+      cityName: "Nashville",
+      updatedAt: new Date().toISOString(),
+      live: false,
+      rooms: PUBLIC_PORTAL_ROOMS.map(room => ({ ...room, onlineCount: null, friendUserIds: [] })),
+    } satisfies PortalSnapshot;
+    const current = this.actions.currentLocation();
     return `
-      <section class="map-layout">
-        <div class="section-heading"><span class="eyebrow">NASHVILLE NOW</span><h1>A living social map—not an MMO.</h1><p>Friends choose a public venue or broad neighborhood. Never live GPS. Never residential addresses.</p></div>
-        <div class="nashville-map">
-          <span class="river"></span>
-          <span class="map-zone zone-east">EAST NASHVILLE</span>
-          <span class="map-zone zone-downtown">DOWNTOWN</span>
-          <span class="map-zone zone-gulch">THE GULCH</span>
-          <span class="map-zone zone-park">CENTENNIAL PARK</span>
-          <span class="town-square-pin">TOWN<br/>SQUARE</span>
-          ${pins}
+      <section class="portal-map-layout">
+        <div class="portal-map-heading">
+          <div><span class="eyebrow">FAST TRAVEL</span><h1>Portal</h1><p>Pick a live room in your selected city. Locations are public rooms—not anyone’s precise GPS.</p></div>
+          <button data-social-action="portal-city-info" class="portal-city-picker"><span>Nashville</span><small>More cities later</small><b>⌄</b></button>
         </div>
-        <div class="map-post-list">${cards || `<div class="portal-empty compact"><p>No friends have attached a Block Post to the city map yet.</p></div>`}</div>
+        <div class="portal-overworld" aria-label="Illustrated Nashville Portal map">
+          <span class="portal-road road-a"></span><span class="portal-road road-b"></span><span class="portal-road road-c"></span>
+          <span class="portal-river"></span>
+          <span class="portal-map-title">NASHVILLE</span>
+          ${snapshot.rooms.map(room => {
+            const friendsHere = this.friends.filter(friend => room.friendUserIds.includes(friend.userId));
+            const here = current.cityId === room.cityId && current.spaceId === room.id;
+            return `
+              <button
+                class="portal-room-pin ${here ? "is-current" : ""} ${room.event ? "is-event" : ""}"
+                style="left:${room.mapX}%;top:${room.mapY}%;--room-color:${escapeAttribute(room.color)}"
+                data-social-action="travel-room"
+                data-room-id="${escapeAttribute(room.id)}"
+                aria-label="${escapeAttribute(`${room.label}, ${room.onlineCount ?? "live count unavailable"} online`)}"
+              >
+                <i><span></span></i>
+                <strong>${escapeHtml(room.label)}</strong>
+                <small>${here ? "YOU ARE HERE" : `${room.onlineCount ?? "—"} LIVE`}</small>
+                ${friendsHere.length ? `<b>${friendsHere.length} ${friendsHere.length === 1 ? "friend" : "friends"}</b>` : ""}
+              </button>
+            `;
+          }).join("")}
+        </div>
+        <div class="portal-room-dock">
+          ${snapshot.rooms.map(room => {
+            const friendsHere = this.friends.filter(friend => room.friendUserIds.includes(friend.userId));
+            const here = current.cityId === room.cityId && current.spaceId === room.id;
+            return `
+              <article style="--room-color:${escapeAttribute(room.color)}">
+                <span class="portal-room-icon">${room.event ? "✦" : "□"}</span>
+                <div><strong>${escapeHtml(room.label)}</strong><p>${escapeHtml(room.tagline)}</p><small>${room.onlineCount ?? "—"} live${friendsHere.length ? ` · ${friendsHere.map(friend => escapeHtml(friend.profile.displayName)).join(", ")}` : ""}</small></div>
+                <button data-social-action="travel-room" data-room-id="${escapeAttribute(room.id)}" ${here ? "disabled" : ""}>${here ? "Here" : friendsHere.length ? "Join friends" : "Enter"}</button>
+              </article>
+            `;
+          }).join("")}
+        </div>
+        ${!snapshot.live ? `<p class="portal-live-note">Live counts are reconnecting. Room travel still works.</p>` : ""}
       </section>
     `;
   }
@@ -786,8 +1008,9 @@ export class SocialPortal {
         ${!ownHome && this.home.connectedAt ? `<div class="shared-history"><span>HOW YOU MET</span><strong>Nashville Town Square</strong><small>Connected ${formatDate(this.home.connectedAt)}</small></div>` : ""}
         <div class="home-wall">${gallery}</div>
         ${ownHome ? this.renderHomeEditor() : `
-          <div class="home-actions"><button data-social-action="invite-home" data-user-id="${escapeAttribute(this.home.ownerId)}">Invite them to my home</button></div>
+          <div class="home-actions"><button data-social-action="knock-home" data-user-id="${escapeAttribute(this.home.ownerId)}">Visit shared home</button><button data-social-action="invite-home" data-user-id="${escapeAttribute(this.home.ownerId)}">Invite them to my home</button></div>
         `}
+        ${ownHome ? `<div class="home-actions"><button class="primary-action" data-social-action="enter-own-home">Enter my live Block Home</button></div>` : ""}
       </section>
     `;
   }
@@ -817,6 +1040,11 @@ export class SocialPortal {
 
   private renderAlerts(): string {
     const incoming = this.friends.filter(friend => friend.status === "pending-incoming");
+    const unreadThreads = buildNeighborhoodThreads(
+      this.friends,
+      this.directMessages,
+      this.account?.userId ?? "",
+    ).filter(thread => thread.unreadCount > 0);
     return `
       <section class="alerts-layout">
         <div class="section-heading"><span class="eyebrow">INVITATIONS</span><h1>Things that need your answer.</h1></div>
@@ -829,7 +1057,10 @@ export class SocialPortal {
           ` : `
             <article class="alert-card"><i style="--friend-color:${escapeAttribute(invitation.sender.blockColor)}"></i><div><strong>${escapeHtml(invitation.sender.displayName)}</strong><p>invited you to their Block Home.</p></div><button class="primary-small" data-social-action="accept-home" data-invitation-id="${invitation.id}" data-user-id="${invitation.hostId}">Visit</button><button data-social-action="decline-home" data-invitation-id="${invitation.id}">Decline</button></article>
           `).join("")}
-          ${!incoming.length && !this.invitations.length ? `<div class="portal-empty compact"><span class="empty-glyph">✓</span><h2>You’re caught up.</h2><p>Circle invitations appear immediately while you’re in Town Square.</p></div>` : ""}
+          ${unreadThreads.map(thread => `
+            <article class="alert-card"><i style="--friend-color:${escapeAttribute(thread.friend.profile.blockColor)}"></i><div><strong>${escapeHtml(thread.friend.profile.displayName)}</strong><p>${thread.unreadCount} unread ${thread.unreadCount === 1 ? "message" : "messages"} in your Neighborhood.</p></div><button class="primary-small" data-social-action="open-neighbor-alert" data-user-id="${escapeAttribute(thread.friend.userId)}">Open</button></article>
+          `).join("")}
+          ${!incoming.length && !this.invitations.length && !unreadThreads.length ? `<div class="portal-empty compact"><span class="empty-glyph">✓</span><h2>You’re caught up.</h2><p>Circle invitations appear immediately while you’re in a public room.</p></div>` : ""}
         </div>
         ${this.blockedProfiles.length ? `<div class="friend-section blocked-section"><h2>Blocked</h2>${this.blockedProfiles.map(profile => `<article class="friend-card"><div class="friend-identity"><i style="--friend-color:${escapeAttribute(profile.blockColor)}"></i><span><strong>${escapeHtml(profile.displayName)}</strong><small>${profile.handle ? `@${escapeHtml(profile.handle)}` : "Hidden from your block"}</small></span></div><button data-social-action="unblock" data-user-id="${profile.userId}">Unblock</button></article>`).join("")}</div>` : ""}
         <div class="account-exit-actions">
@@ -849,7 +1080,7 @@ export class SocialPortal {
             <textarea name="body" maxlength="500" placeholder="Say something to your friends…"></textarea>
             <label class="media-drop"><span>＋</span><strong>Add a photo or GIF</strong><small>Photos are compressed. Animated GIFs: 1 MB max.</small><input name="media" type="file" accept="image/jpeg,image/png,image/webp,image/gif" /></label>
             <div class="post-options">
-              <label>Place on Nashville map<select name="location">${MAP_LOCATIONS.map(location => `<option value="${escapeAttribute(location)}">${location || "Wall only"}</option>`).join("")}</select></label>
+              <label>Tag a Portal room<select name="location">${MAP_LOCATIONS.map(location => `<option value="${escapeAttribute(location)}">${location || "Wall only"}</option>`).join("")}</select></label>
               <label class="check-option"><input name="pinned" type="checkbox" /> Pin a copy inside my Block Home</label>
             </div>
             <div class="modal-actions"><button type="button" data-social-action="cancel-modal">Cancel</button><button class="primary-action">Post for 24 hours</button></div>
@@ -886,6 +1117,59 @@ export class SocialPortal {
           ? "consent"
           : "post";
       this.render();
+      return;
+    }
+    if (action === "clear-neighbor-search") {
+      this.neighborSearchQuery = "";
+      this.neighborSearchResults = [];
+      this.render();
+      return;
+    }
+    if (action === "open-neighbor-alert" && target.dataset.userId) {
+      this.expandedNeighborId = target.dataset.userId;
+      this.tab = "friends";
+      await this.loadCurrentTab();
+      void this.markThreadRead(target.dataset.userId);
+      return;
+    }
+    if (action === "toggle-neighbor" && target.dataset.userId) {
+      const userId = target.dataset.userId;
+      const body = this.root.querySelector<HTMLElement>(".social-body");
+      const previousScroll = body?.scrollTop ?? 0;
+      this.expandedNeighborId = this.expandedNeighborId === userId ? null : userId;
+      this.render();
+      requestAnimationFrame(() => {
+        const nextBody = this.root.querySelector<HTMLElement>(".social-body");
+        if (nextBody) nextBody.scrollTop = previousScroll;
+        const list = this.root.querySelector<HTMLElement>(`[data-direct-message-list="${CSS.escape(userId)}"]`);
+        if (list) list.scrollTop = list.scrollHeight;
+      });
+      if (this.expandedNeighborId === userId) void this.markThreadRead(userId);
+      return;
+    }
+    if (action === "add-neighbor" && target.dataset.userId) {
+      const added = await this.runAction(
+        async () => { await this.service.sendFriendRequest(target.dataset.userId!); },
+        "Neighbor request sent.",
+      );
+      if (added) await this.loadCurrentTab();
+      return;
+    }
+    if (action === "travel-room" && target.dataset.roomId && isPortalRoomId(target.dataset.roomId)) {
+      const room = portalRoom(target.dataset.roomId);
+      if (!room) return;
+      this.root.classList.add("is-fast-traveling");
+      await wait(180);
+      await this.actions.onTravel({
+        cityId: room.cityId,
+        spaceId: room.id,
+        kind: room.kind,
+      });
+      this.root.classList.remove("is-fast-traveling");
+      return;
+    }
+    if (action === "portal-city-info") {
+      this.actions.onNotice("Nashville is the first Portal city. City switching comes after these rooms have real activity.");
       return;
     }
     if (action === "planet-now") {
@@ -967,10 +1251,12 @@ export class SocialPortal {
       const userId = target.dataset.userId;
       const access = await this.runHomeAccess(userId);
       if (access === "open") {
-        this.viewedHomeId = userId;
-        this.tab = "home";
-        await this.loadCurrentTab();
+        await this.travelToHome(userId);
       }
+      return;
+    }
+    if (action === "enter-own-home" && this.account && !this.account.isAnonymous) {
+      await this.travelToHome(this.account.userId);
       return;
     }
     if (action === "accept-friend" && target.dataset.userId) {
@@ -1008,9 +1294,8 @@ export class SocialPortal {
         "Home invitation accepted.",
       );
       if (!accepted) return;
-      this.viewedHomeId = target.dataset.userId;
-      this.tab = "home";
-      return this.loadCurrentTab();
+      await this.travelToHome(target.dataset.userId);
+      return;
     }
     if (action === "accept-knock" && target.dataset.invitationId) {
       await this.runAction(
@@ -1073,6 +1358,47 @@ export class SocialPortal {
       }
       return;
     }
+    if (formName === "neighbor-search") {
+      const query = String(data.get("query") ?? "").trim().replace(/^@/, "").slice(0, 40);
+      try {
+        this.neighborSearchResults = await this.service.searchPeople(query);
+        this.neighborSearchQuery = query;
+      } catch (error) {
+        this.actions.onNotice(errorMessage(error));
+        return;
+      }
+      this.render();
+      requestAnimationFrame(() => {
+        const input = this.root.querySelector<HTMLInputElement>('[data-social-form="neighbor-search"] input');
+        if (input) {
+          input.focus({ preventScroll: true });
+          input.setSelectionRange(input.value.length, input.value.length);
+        }
+      });
+      return;
+    }
+    if (formName === "direct-message" && form.dataset.userId) {
+      const recipientId = form.dataset.userId;
+      const input = form.elements.namedItem("message") as HTMLInputElement | null;
+      const button = form.querySelector<HTMLButtonElement>("button");
+      const value = String(data.get("message") ?? "");
+      if (!input || !value.trim()) return;
+      if (button) button.disabled = true;
+      try {
+        const message = await this.service.sendDirectMessage(recipientId, value);
+        if (!this.directMessages.some(candidate => candidate.id === message.id)) {
+          this.directMessages.push(message);
+        }
+        this.appendDirectMessage(recipientId, message);
+        input.value = "";
+        input.focus({ preventScroll: true });
+      } catch (error) {
+        this.actions.onNotice(errorMessage(error));
+      } finally {
+        if (button) button.disabled = false;
+      }
+      return;
+    }
     if (formName === "account") {
       const email = String(data.get("email") ?? "");
       const existing = submitter?.dataset.accountIntent === "existing";
@@ -1093,6 +1419,7 @@ export class SocialPortal {
       const completed = await this.runAction(async () => {
         this.profile = await this.service.acceptSocialTerms();
         await this.ensureOwnHome();
+        await this.startMessageSubscription();
       }, "Account setup complete.");
       if (completed && this.profileReady()) {
         this.modal = null;
@@ -1145,6 +1472,111 @@ export class SocialPortal {
     }
   }
 
+  private appendDirectMessage(friendUserId: string, message: DirectMessage): void {
+    const list = this.root.querySelector<HTMLElement>(`[data-direct-message-list="${CSS.escape(friendUserId)}"]`);
+    if (list && !list.querySelector(`[data-message-id="${CSS.escape(message.id)}"]`)) {
+      list.querySelector(".neighbor-chat-empty")?.remove();
+      list.insertAdjacentHTML("beforeend", this.renderDirectMessage(message));
+      list.scrollTop = list.scrollHeight;
+    }
+    const blocks = this.root.querySelector<HTMLElement>(`[data-house-message-blocks="${CSS.escape(friendUserId)}"]`);
+    if (blocks) {
+      const block = document.createElement("i");
+      block.className = message.senderId === this.account?.userId ? "is-mine" : "is-theirs";
+      block.title = message.body ?? "Encrypted message";
+      blocks.append(block);
+      while (blocks.children.length > 10) blocks.firstElementChild?.remove();
+    }
+    const property = this.root.querySelector<HTMLElement>(`[data-neighbor-property="${CSS.escape(friendUserId)}"]`);
+    const preview = property?.querySelector<HTMLElement>(".neighbor-last-message");
+    if (preview) preview.textContent = truncateText(message.body ?? "Encrypted message", 64);
+    this.animateMessageIntoHouse(friendUserId);
+  }
+
+  private animateMessageIntoHouse(friendUserId: string): void {
+    const form = this.root.querySelector<HTMLElement>(`[data-social-form="direct-message"][data-user-id="${CSS.escape(friendUserId)}"]`);
+    const house = this.root.querySelector<HTMLElement>(`[data-neighbor-property="${CSS.escape(friendUserId)}"] .neighbor-house-panel .property-house`);
+    if (!form || !house) return;
+    const start = form.getBoundingClientRect();
+    const destination = house.getBoundingClientRect();
+    const block = document.createElement("i");
+    block.className = "neighborhood-flying-block";
+    block.style.setProperty("--block-start-x", `${start.right - 44}px`);
+    block.style.setProperty("--block-start-y", `${start.top + 8}px`);
+    block.style.setProperty("--block-travel-x", `${destination.left + destination.width / 2 - (start.right - 44)}px`);
+    block.style.setProperty("--block-travel-y", `${destination.top + destination.height / 2 - (start.top + 8)}px`);
+    document.body.append(block);
+    block.addEventListener("animationend", () => block.remove(), { once: true });
+  }
+
+  private async markThreadRead(friendUserId: string): Promise<void> {
+    try {
+      await this.service.markDirectMessagesRead(friendUserId);
+      const readAt = new Date().toISOString();
+      this.directMessages = this.directMessages.map(message => (
+        message.senderId === friendUserId
+        && message.recipientId === this.account?.userId
+        && !message.readAt
+          ? { ...message, readAt }
+          : message
+      ));
+      const property = this.root.querySelector<HTMLElement>(`[data-neighbor-property="${CSS.escape(friendUserId)}"]`);
+      property?.classList.remove("has-unread");
+      property?.querySelector(".neighbor-name-line b")?.remove();
+      property?.querySelectorAll(".property-house.is-lit").forEach(house => house.classList.remove("is-lit"));
+      this.updateAlertBadge();
+    } catch {
+      // A read receipt is helpful but never worth interrupting the conversation.
+    }
+  }
+
+  private async startMessageSubscription(): Promise<void> {
+    this.unsubscribeMessages?.();
+    this.unsubscribeMessages = null;
+    try {
+      this.unsubscribeMessages = await this.service.subscribeToDirectMessages(
+        () => void this.refreshDirectMessagesPreservingComposer(),
+      );
+    } catch {
+      // History still loads normally if Realtime is temporarily unavailable.
+    }
+  }
+
+  private async refreshDirectMessagesPreservingComposer(): Promise<void> {
+    if (!this.account || this.account.isAnonymous || !this.profileReady()) return;
+    try {
+      this.directMessages = await this.service.loadDirectMessages();
+    } catch {
+      return;
+    }
+    if (!this.openState || this.tab !== "friends") {
+      this.updateAlertBadge();
+      return;
+    }
+    const activeForm = document.activeElement?.closest<HTMLFormElement>('[data-social-form="direct-message"]');
+    const friendUserId = activeForm?.dataset.userId ?? this.expandedNeighborId;
+    if (friendUserId && this.expandedNeighborId === friendUserId) {
+      const thread = buildNeighborhoodThreads(this.friends, this.directMessages, this.account.userId)
+        .find(candidate => candidate.friend.userId === friendUserId);
+      const list = this.root.querySelector<HTMLElement>(`[data-direct-message-list="${CSS.escape(friendUserId)}"]`);
+      if (thread && list) {
+        list.innerHTML = thread.messages.length
+          ? thread.messages.slice(-80).map(message => this.renderDirectMessage(message)).join("")
+          : `<p class="neighbor-chat-empty">This is the start of your street together.</p>`;
+        list.scrollTop = list.scrollHeight;
+      }
+      const blocks = this.root.querySelector<HTMLElement>(`[data-house-message-blocks="${CSS.escape(friendUserId)}"]`);
+      if (thread && blocks) {
+        blocks.innerHTML = recentHouseBlocks(thread.messages, 10)
+          .map(message => `<i class="${message.senderId === this.account?.userId ? "is-mine" : "is-theirs"}" title="${escapeAttribute(message.body ?? "Encrypted message")}"></i>`)
+          .join("");
+      }
+      this.updateAlertBadge();
+      return;
+    }
+    this.render();
+  }
+
   private async runAction(action: () => Promise<void>, success: string): Promise<boolean> {
     try {
       await action();
@@ -1165,6 +1597,23 @@ export class SocialPortal {
       this.actions.onNotice(errorMessage(error));
       return null;
     }
+  }
+
+  private async travelToHome(ownerId: string): Promise<void> {
+    const spaceId = homeSpaceId(ownerId);
+    if (!spaceId) {
+      this.actions.onNotice("That Block Home address is invalid.");
+      return;
+    }
+    const friend = this.friends.find(candidate => candidate.userId === ownerId);
+    const profile = ownerId === this.account?.userId ? this.profile : friend?.profile;
+    await this.actions.onTravel({
+      cityId: "nashville",
+      spaceId,
+      kind: "house",
+      label: profile ? `${profile.displayName}’s Block Home` : "Block Home",
+      color: profile?.blockColor ?? "#ff6b6b",
+    });
   }
 
   private async loadMoreFeed(): Promise<void> {
@@ -1538,13 +1987,15 @@ export class SocialPortal {
     if (!this.account || this.account.isAnonymous || !this.profileReady()) return;
     const generation = ++this.alertGeneration;
     try {
-      const [friends, invitations] = await Promise.all([
+      const [friends, invitations, messages] = await Promise.all([
         this.service.loadFriends(),
         this.service.loadHomeInvitations(),
+        this.service.loadDirectMessages(),
       ]);
       if (generation !== this.alertGeneration) return;
       this.friends = friends;
       this.invitations = invitations;
+      this.directMessages = messages;
       if (this.openState) this.updateAlertBadge();
     } catch {
       // Active tab loads surface errors. Badge refreshes stay quiet during
@@ -1631,7 +2082,12 @@ export class SocialPortal {
   }
 
   private alertCount(): number {
-    return this.friends.filter(friend => friend.status === "pending-incoming").length + this.invitations.length;
+    const unreadMessages = this.directMessages.filter(message => (
+      message.recipientId === this.account?.userId && !message.readAt
+    )).length;
+    return this.friends.filter(friend => friend.status === "pending-incoming").length
+      + this.invitations.length
+      + unreadMessages;
   }
 
   private profileReady(): boolean {
@@ -1660,6 +2116,11 @@ export class SocialPortal {
     this.planetComments.clear();
     this.dismissedPlanetPostIds.clear();
     this.friends = [];
+    this.directMessages = [];
+    this.expandedNeighborId = null;
+    this.neighborSearchQuery = "";
+    this.neighborSearchResults = [];
+    this.portalSnapshot = null;
     this.mapPosts = [];
     this.home = null;
     this.invitations = [];
@@ -1754,6 +2215,17 @@ function timeUntil(timestamp: string): string {
 
 function formatDate(timestamp: string): string {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(timestamp));
+}
+
+function formatMessageTime(timestamp: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
+}
+
+function isRecentlyOnline(timestamp: string | null): boolean {
+  return Boolean(timestamp && Date.now() - Date.parse(timestamp) < 10 * 60_000);
 }
 
 function isPortalTab(value: unknown): value is PortalTab {

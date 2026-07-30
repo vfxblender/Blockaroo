@@ -30,15 +30,18 @@ test("guest demo posts arrive in feed-sized pages and stop at the real edge", ()
   assert.deepEqual(demoBlockPlanetPage(2, now), []);
 });
 
-test("twenty posts are dealt beneath eight visible thumbnail tops", () => {
+test("each visible wall slot belongs to one friend before extra friends queue behind it", () => {
   const posts = demoBlockPlanetPage(0, Date.parse("2026-07-27T12:00:00Z"));
   const stacks = buildBlockPlanetStacks(posts);
-  assert.deepEqual(stacks.map(stack => stack.length), [3, 3, 3, 3, 2, 2, 2, 2]);
+  assert.deepEqual(stacks.map(stack => stack.length), [4, 4, 2, 2, 2, 2, 2, 2]);
   assert.deepEqual(stacks.map(stack => stack[0]?.id), posts.slice(0, 8).map(post => post.id));
+  assert.equal(new Set(stacks.map(stack => stack[0]?.authorId)).size, 8);
+  assert.equal(stacks[0].slice(0, 2).every(post => post.authorId === posts[0].authorId), true);
+  assert.equal(stacks[0][2]?.authorId, posts[8].authorId);
 
   const dismissed = new Set([posts[0].id, posts[8].id]);
   const afterDismiss = buildBlockPlanetStacks(posts, dismissed);
-  assert.equal(afterDismiss[0][0]?.id, posts[16].id);
+  assert.equal(afterDismiss[0][0]?.id, posts[10].id);
   assert.equal(afterDismiss.flat().length, 18);
 });
 
@@ -46,7 +49,7 @@ test("multiple feed batches remain one continuous eight-stack wall", () => {
   const now = Date.parse("2026-07-27T12:00:00Z");
   const posts = [...demoBlockPlanetPage(0, now), ...demoBlockPlanetPage(1, now)];
   const stacks = buildBlockPlanetStacks(posts);
-  assert.deepEqual(stacks.map(stack => stack.length), [5, 5, 5, 5, 5, 5, 5, 5]);
+  assert.deepEqual(stacks.map(stack => stack.length), [8, 8, 4, 4, 4, 4, 4, 4]);
   assert.equal(stacks.flat().length, 40);
 });
 
