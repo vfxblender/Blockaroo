@@ -1,10 +1,13 @@
 import type { RealtimeChannel } from "@supabase/supabase-js";
+import { PUBLIC_PORTAL_ROOMS } from "../../shared/portalRooms";
 import type { PlayerIdentity } from "../game/types/world";
 import type {
   BlockHome,
   CreatePostInput,
+  DirectMessage,
   FriendConnection,
   HomeInvitation,
+  PortalSnapshot,
   SocialAccount,
   SocialPost,
   SocialProfile,
@@ -65,16 +68,46 @@ interface HomeInvitationRow {
   expires_at: string;
 }
 
+interface DirectMessageRow {
+  id: string;
+  sender_id: string;
+  recipient_id: string;
+  body: string | null;
+  ciphertext: string | null;
+  encryption_version: number | null;
+  client_nonce: string;
+  created_at: string;
+  read_at: string | null;
+}
+
+interface DirectoryProfileRow {
+  user_id: string;
+  display_name: string;
+  handle: string | null;
+  block_color: string;
+  bio: string;
+  profile_photo_path: string | null;
+  last_seen_at: string | null;
+}
+
 const FEED_PAGE_SIZE = 20;
 const MAX_SOCIAL_IMAGE_INPUT_BYTES = 20 * 1024 * 1024;
 const MAX_SOCIAL_IMAGE_BYTES = 512 * 1024;
 const MAX_SOCIAL_GIF_BYTES = 1024 * 1024;
-const MAP_LOCATIONS = new Set(["Town Square", "Downtown", "East Nashville", "The Gulch", "Centennial Park"]);
+const DIRECT_MESSAGE_PAGE_SIZE = 400;
+const MAP_LOCATIONS = new Set([
+  "Town Square",
+  "Film District",
+  "Art Yard",
+  "Night Market",
+]);
 
 export class SocialService {
-  readonly media = new SocialMediaStore((import.meta.env.VITE_WORLD_SOCKET_URL as string | undefined)?.trim() ?? "");
+  private readonly worldEndpoint = (import.meta.env.VITE_WORLD_SOCKET_URL as string | undefined)?.trim() ?? "";
+  readonly media = new SocialMediaStore(this.worldEndpoint);
   private postChannel: RealtimeChannel | null = null;
   private alertChannel: RealtimeChannel | null = null;
+  private messageChannel: RealtimeChannel | null = null;
 
   get available(): boolean {
     return Boolean(supabase);
@@ -365,6 +398,105 @@ export class SocialService {
     });
   }
 
+  async searchPeople(query: string): Promise<SocialProfile[]> {
+    await this.requirePermanentAccount();
+    const searchQuery = query.trim().replace(/^@/, "").slice(0, 40);
+    if (searchQuery.length < 2) throw new Error("Search with at least two letters.");
+    this.requireClient();
+    const { data, error } = await supabase!.rpc("search_social_profiles", {
+      search_query: searchQuery,
+      result_limit: 20,
+    });
+    if (error) throw error;
+    return ((data ?? []) as DirectoryProfileRow[]).map(mapDirectoryProfile);
+  }
+
+  async loadDirectMessages(limit = DIRECT_MESSAGE_PAGE_SIZE): Promise<DirectMessage[]> {
+    await this.requirePermanentAccount();
+    this.requireClient();
+    const safeLimit = Math.max(1, Math.min(DIRECT_MESSAGE_PAGE_SIZE, Math.floor(limit)));
+    const { data, error } = await supabase!
+      .from("direct_messages")
+      .select("id,sender_id,recipient_id,body,ciphertext,encryption_version,client_nonce,created_at,read_at")
+      .order("created_at", { ascending: false })
+      .limit(safeLimit);
+    if (error) throw error;
+    return ((data ?? []) as DirectMessageRow[]).reverse().map(mapDirectMessage);
+  }
+
+  async sendDirectMessage(recipientId: string, value: string): Promise<DirectMessage> {
+    const account = await this.requirePermanentAccount();
+    const body = value.trim().replace(/\s+/g, " ").slice(0, 2_000);
+    if (!body) throw new Error("Write a message first.");
+    if (recipientId === account.userId) throw new Error("Choose one of your neighbors.");
+    this.requireClient();
+    const { data, error } = await supabase!
+      .from("direct_messages")
+      .insert({
+        sender_id: account.userId,
+        recipient_id: recipientId,
+        body,
+        ciphertext: null,
+        encryption_version: null,
+        client_nonce: crypto.randomUUID(),
+      })
+      .select("id,sender_id,recipient_id,body,ciphertext,encryption_version,client_nonce,created_at,read_at")
+      .single();
+    if (error) throw error;
+    return mapDirectMessage(data as DirectMessageRow);
+  }
+
+  async markDirectMessagesRead(senderId: string): Promise<void> {
+    const account = await this.requirePermanentAccount();
+    this.requireClient();
+    const { error } = await supabase!
+      .from("direct_messages")
+      .update({ read_at: new Date().toISOString() })
+      .eq("sender_id", senderId)
+      .eq("recipient_id", account.userId)
+      .is("read_at", null);
+    if (error) throw error;
+  }
+
+  async loadPortalSnapshot(): Promise<PortalSnapshot> {
+    const fallback = portalFallbackSnapshot();
+    if (!this.worldEndpoint) return fallback;
+    try {
+      const session = await getOrCreateAnonymousSession();
+      const response = await fetch(`${httpEndpoint(this.worldEndpoint)}/portal`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        cache: "no-store",
+      });
+      if (!response.ok) return fallback;
+      const result = await response.json() as {
+        rooms?: Array<{ id?: unknown; onlineCount?: unknown; friendUserIds?: unknown }>;
+        updatedAt?: unknown;
+      };
+      const liveRooms = new Map((result.rooms ?? []).flatMap(room => (
+        typeof room.id === "string" ? [[room.id, room]] : []
+      )));
+      return {
+        ...fallback,
+        live: true,
+        updatedAt: typeof result.updatedAt === "string" ? result.updatedAt : new Date().toISOString(),
+        rooms: PUBLIC_PORTAL_ROOMS.map(room => {
+          const live = liveRooms.get(room.id);
+          return {
+            ...room,
+            onlineCount: typeof live?.onlineCount === "number"
+              ? Math.max(0, Math.floor(live.onlineCount))
+              : 0,
+            friendUserIds: Array.isArray(live?.friendUserIds)
+              ? live.friendUserIds.filter((value): value is string => typeof value === "string")
+              : [],
+          };
+        }),
+      };
+    } catch {
+      return fallback;
+    }
+  }
+
   async relationship(targetUserId: string): Promise<FriendConnection["status"] | "none" | "blocked"> {
     const account = await this.account();
     if (account.isAnonymous) return "none";
@@ -620,6 +752,24 @@ export class SocialService {
     };
   }
 
+  async subscribeToDirectMessages(callback: () => void): Promise<() => void> {
+    if (!supabase) return () => undefined;
+    const client = supabase;
+    const account = await this.requirePermanentAccount();
+    const session = await getOrCreateAnonymousSession();
+    await client.realtime.setAuth(session.access_token);
+    if (this.messageChannel) await client.removeChannel(this.messageChannel);
+    const channel = client
+      .channel(`direct-messages:${account.userId}`, { config: { private: true } })
+      .on("postgres_changes", { event: "*", schema: "public", table: "direct_messages" }, callback)
+      .subscribe();
+    this.messageChannel = channel;
+    return () => {
+      if (this.messageChannel === channel) this.messageChannel = null;
+      void client.removeChannel(channel);
+    };
+  }
+
   private async profiles(userIds: string[]): Promise<Map<string, SocialProfile>> {
     if (!userIds.length) return new Map();
     this.requireClient();
@@ -685,6 +835,57 @@ function mapPost(row: PostRow, author: SocialProfile): SocialPost {
     createdAt: row.created_at,
     expiresAt: row.expires_at,
   };
+}
+
+function mapDirectMessage(row: DirectMessageRow): DirectMessage {
+  return {
+    id: row.id,
+    senderId: row.sender_id,
+    recipientId: row.recipient_id,
+    body: row.body,
+    ciphertext: row.ciphertext,
+    encryptionVersion: row.encryption_version,
+    clientNonce: row.client_nonce,
+    createdAt: row.created_at,
+    readAt: row.read_at,
+  };
+}
+
+function mapDirectoryProfile(row: DirectoryProfileRow): SocialProfile {
+  return {
+    userId: row.user_id,
+    displayName: row.display_name,
+    handle: row.handle,
+    blockColor: row.block_color,
+    bio: row.bio ?? "",
+    interests: [],
+    profilePhotoPath: row.profile_photo_path,
+    lastSeenAt: row.last_seen_at,
+    termsAcceptedAt: null,
+    ageConfirmedAt: null,
+    termsVersion: null,
+  };
+}
+
+function portalFallbackSnapshot(): PortalSnapshot {
+  return {
+    cityId: "nashville",
+    cityName: "Nashville",
+    updatedAt: new Date().toISOString(),
+    live: false,
+    rooms: PUBLIC_PORTAL_ROOMS.map(room => ({
+      ...room,
+      onlineCount: null,
+      friendUserIds: [],
+    })),
+  };
+}
+
+function httpEndpoint(value: string): string {
+  const url = new URL(value);
+  if (url.protocol === "wss:") url.protocol = "https:";
+  if (url.protocol === "ws:") url.protocol = "http:";
+  return url.href.replace(/\/$/, "");
 }
 
 function cleanDisplayName(value: string): string {

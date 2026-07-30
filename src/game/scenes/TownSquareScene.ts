@@ -5,6 +5,7 @@ import type {
   ServerCircleInviteMessage,
   ServerCircleJoinRequestMessage,
 } from "../../../shared/worldProtocol";
+import { portalRoom } from "../../../shared/portalRooms";
 import { CircleVoice } from "../../circles/CircleVoice";
 import { SocialPortal } from "../../ui/SocialPortal";
 import { CircleExperience } from "../../ui/CircleExperience";
@@ -12,9 +13,14 @@ import { PALETTE, WORLD } from "../config";
 import { loadProfile, saveProfile } from "../systems/LocalProfile";
 import { LOCAL_TOWN_NEIGHBORS, type LocalTownNeighbor } from "../systems/LocalTownNeighbors";
 import { createTownSquareTransport } from "../systems/createTownSquareTransport";
-import type { BlockChatMessage, OnlinePlayer, TownSquareTransport } from "../systems/TownSquareTransport";
+import type {
+  BlockChatMessage,
+  OnlinePlayer,
+  TownSquareCallbacks,
+  TownSquareTransport,
+} from "../systems/TownSquareTransport";
 import { WorldRouter } from "../systems/WorldRouter";
-import type { PlayerIdentity } from "../types/world";
+import type { PlayerIdentity, WorldLocation } from "../types/world";
 
 type Remote = {
   body: Phaser.GameObjects.Container;
@@ -71,6 +77,7 @@ export class TownSquareScene extends Phaser.Scene {
   private portalIcon: Phaser.GameObjects.Graphics | null = null;
   private mutedUserIds = new Set<string>(loadStoredIds("blockaroo.muted-users"));
   private blockedUserIds = new Set<string>(loadStoredIds("blockaroo.blocked-users"));
+  private worldLayer: Phaser.GameObjects.Container | null = null;
 
   constructor() { super("TownSquare"); }
 
@@ -182,24 +189,92 @@ export class TownSquareScene extends Phaser.Scene {
   }
 
   private drawWorld(): void {
+    this.worldLayer?.destroy(true);
+    const location = this.router.current();
+    const room = portalRoom(location.spaceId);
+    const layer = this.add.container(0, 0).setDepth(-10_000);
     const g = this.add.graphics();
-    g.fillStyle(0x3e8c72).fillRect(0, 0, WORLD.width, WORLD.height);
-    g.fillStyle(0x5ea982).fillCircle(1100, 750, 570);
-    g.lineStyle(50, 0xcdbb8a, 1).strokeCircle(1100, 750, 520);
-    g.fillStyle(0x89c5e3).fillCircle(1100, 750, 130);
-    g.lineStyle(8, 0xe9f6ff, .8).strokeCircle(1100, 750, 100);
-    g.fillStyle(0xf4e0a3).fillCircle(1100, 750, 35);
-    for (let i = 0; i < 62; i++) {
-      const x = Phaser.Math.Between(55, WORLD.width - 55), y = Phaser.Math.Between(55, WORLD.height - 55);
-      if (Phaser.Math.Distance.Between(x, y, 1100, 750) < 180) continue;
-      g.fillStyle(0x285b50).fillCircle(x, y, Phaser.Math.Between(16, 32));
-      g.fillStyle(0x3e8167).fillCircle(x - 6, y - 8, Phaser.Math.Between(10, 20));
+    layer.add(g);
+
+    if (location.kind === "house") {
+      const homeColor = Phaser.Display.Color.HexStringToColor(
+        /^#[0-9a-f]{6}$/i.test(location.color ?? "") ? location.color! : "#ff6b6b",
+      ).color;
+      g.fillStyle(0x89c5e3).fillRect(0, 0, WORLD.width, WORLD.height);
+      g.fillStyle(0x78ad72).fillRect(0, 1040, WORLD.width, 460);
+      g.fillStyle(0xf2e6c9).fillRoundedRect(330, 210, 1540, 1030, 70);
+      g.fillStyle(homeColor).fillRoundedRect(430, 310, 1340, 820, 34);
+      g.fillStyle(0xfff7df).fillRoundedRect(510, 390, 1180, 660, 24);
+      g.fillStyle(0x9ed4e6).fillRoundedRect(645, 455, 310, 230, 14);
+      g.fillStyle(0x9ed4e6).fillRoundedRect(1245, 455, 310, 230, 14);
+      g.fillStyle(0x172033).fillRoundedRect(970, 720, 260, 330, 18);
+      g.fillStyle(0xffd166).fillCircle(1180, 885, 13);
+      g.fillStyle(0xd8c188).fillRoundedRect(620, 795, 410, 155, 22);
+      g.fillStyle(0xd8c188).fillRoundedRect(1170, 795, 410, 155, 22);
+      g.lineStyle(10, 0x172033, 0.18).strokeRoundedRect(510, 390, 1180, 660, 24);
+    } else if (location.spaceId === "film-district") {
+      g.fillStyle(0x24233a).fillRect(0, 0, WORLD.width, WORLD.height);
+      g.fillStyle(0x3d354d).fillRoundedRect(280, 180, 1640, 1140, 90);
+      g.fillStyle(0xf3ead7).fillRoundedRect(640, 260, 920, 420, 24);
+      g.fillStyle(0x171625).fillRoundedRect(690, 310, 820, 320, 12);
+      g.lineStyle(34, 0xff6b6b, 0.7).strokeRoundedRect(360, 760, 1480, 390, 50);
+      for (let index = 0; index < 11; index += 1) {
+        g.fillStyle(index % 2 ? 0xffd166 : 0xff6b6b, 0.8)
+          .fillCircle(440 + index * 132, 1220, 12);
+      }
+    } else if (location.spaceId === "art-yard") {
+      g.fillStyle(0x296b68).fillRect(0, 0, WORLD.width, WORLD.height);
+      g.fillStyle(0x6bc0ae).fillRoundedRect(220, 180, 1760, 1140, 120);
+      g.fillStyle(0xf2e6c9).fillRoundedRect(520, 340, 1160, 740, 38);
+      const colors = [0xff6b6b, 0xffd166, 0x4cc9f0, 0xa78bfa, 0x06d6a0];
+      for (let index = 0; index < 30; index += 1) {
+        g.fillStyle(colors[index % colors.length]!, 0.82)
+          .fillCircle(600 + ((index * 173) % 1000), 420 + ((index * 97) % 580), 12 + (index % 4) * 6);
+      }
+    } else if (location.spaceId === "night-market") {
+      g.fillStyle(0x201a39).fillRect(0, 0, WORLD.width, WORLD.height);
+      g.fillStyle(0x3c315a).fillRoundedRect(230, 170, 1740, 1160, 100);
+      for (let index = 0; index < 8; index += 1) {
+        const x = 360 + (index % 4) * 480;
+        const y = 350 + Math.floor(index / 4) * 610;
+        g.fillStyle(index % 2 ? 0xff6b6b : 0xa78bfa).fillRoundedRect(x, y, 280, 190, 24);
+        g.fillStyle(0xffd166).fillTriangle(x - 20, y, x + 140, y - 90, x + 300, y);
+      }
+      for (let index = 0; index < 18; index += 1) {
+        g.fillStyle(index % 3 ? 0xffd166 : 0x4cc9f0).fillCircle(260 + index * 98, 190, 10);
+      }
+    } else {
+      g.fillStyle(0x3e8c72).fillRect(0, 0, WORLD.width, WORLD.height);
+      g.fillStyle(0x5ea982).fillCircle(1100, 750, 570);
+      g.lineStyle(50, 0xcdbb8a, 1).strokeCircle(1100, 750, 520);
+      g.fillStyle(0x89c5e3).fillCircle(1100, 750, 130);
+      g.lineStyle(8, 0xe9f6ff, .8).strokeCircle(1100, 750, 100);
+      g.fillStyle(0xf4e0a3).fillCircle(1100, 750, 35);
+      for (let index = 0; index < 62; index += 1) {
+        const x = Phaser.Math.Between(55, WORLD.width - 55);
+        const y = Phaser.Math.Between(55, WORLD.height - 55);
+        if (Phaser.Math.Distance.Between(x, y, 1100, 750) < 180) continue;
+        g.fillStyle(0x285b50).fillCircle(x, y, Phaser.Math.Between(16, 32));
+        g.fillStyle(0x3e8167).fillCircle(x - 6, y - 8, Phaser.Math.Between(10, 20));
+      }
     }
-    this.add.text(1100, 535, "THE FOUNTAIN", { fontFamily: "system-ui", fontSize: "14px", color: "#fff2c6", fontStyle: "bold" }).setOrigin(.5);
-    this.add.text(1100, 100, "NASHVILLE TOWN SQUARE", { fontFamily: "system-ui", fontSize: "23px", color: "#f7f4ec", fontStyle: "bold" }).setOrigin(.5).setAlpha(.85);
+    const roomLabel = location.label ?? room?.label ?? (location.kind === "house" ? "Block Home" : "Town Square");
+    const label = this.add.text(1100, 100, `NASHVILLE · ${roomLabel.toUpperCase()}`, {
+      fontFamily: "system-ui",
+      fontSize: "23px",
+      color: "#f7f4ec",
+      fontStyle: "bold",
+      stroke: "#182033",
+      strokeThickness: 5,
+    }).setOrigin(.5).setAlpha(.9);
+    layer.add(label);
+    this.worldLayer = layer;
   }
 
   private createLocalNeighbors(): void {
+    for (const neighbor of this.localNeighbors) neighbor.body.destroy(true);
+    this.localNeighbors = [];
+    if (this.router.current().spaceId !== "town-square") return;
     this.localNeighbors = LOCAL_TOWN_NEIGHBORS.map(neighbor => ({
       ...neighbor,
       body: this.makePlayer(
@@ -458,6 +533,8 @@ export class TownSquareScene extends Phaser.Scene {
           this.network?.leaveCircle();
         }
       },
+      currentLocation: () => this.router.current(),
+      onTravel: location => this.travelTo(location),
     });
     if (new URLSearchParams(window.location.search).get("wall") === "guest") {
       window.setTimeout(() => this.openSocialPortal(), 0);
@@ -498,7 +575,18 @@ export class TownSquareScene extends Phaser.Scene {
   }
 
   private async startMultiplayer(): Promise<void> {
-    this.network = createTownSquareTransport({
+    this.network = createTownSquareTransport(this.transportCallbacks(), this.router.current());
+
+    document.addEventListener("visibilitychange", this.handleVisibilityChange);
+    window.addEventListener("focus", this.handleNetworkResume);
+    window.addEventListener("online", this.handleNetworkResume);
+    window.addEventListener("pageshow", this.handleNetworkResume);
+
+    await this.reconnectMultiplayer(true);
+  }
+
+  private transportCallbacks(): TownSquareCallbacks {
+    return {
       onPlayers: players => this.syncOnlinePlayers(players),
       onMovement: player => this.upsertRemote(player),
       onCorrection: (x, y, velocityX, velocityY, sequence) => this.applyAuthoritativeCorrection(x, y, velocityX, velocityY, sequence),
@@ -513,14 +601,54 @@ export class TownSquareScene extends Phaser.Scene {
       onCircleClosed: (circleId, reason) => this.closeCircle(circleId, reason),
       onCircleSignal: (fromPlayerId, signal) => void this.circleVoice?.handleSignal(fromPlayerId, signal),
       onCircleGameState: (circleId, snapshot) => this.receiveCircleGameState(circleId, snapshot),
-    });
+    };
+  }
 
-    document.addEventListener("visibilitychange", this.handleVisibilityChange);
-    window.addEventListener("focus", this.handleNetworkResume);
-    window.addEventListener("online", this.handleNetworkResume);
-    window.addEventListener("pageshow", this.handleNetworkResume);
+  private async travelTo(location: WorldLocation): Promise<void> {
+    const current = this.router.current();
+    if (current.cityId === location.cityId && current.spaceId === location.spaceId) {
+      this.socialPortal?.close();
+      return;
+    }
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.socialPortal?.close();
+    this.circleExperience?.hide();
+    this.network?.leaveCircle();
+    await this.circleVoice?.leave();
+    this.activeCircle = null;
+    await this.network?.disconnect();
+    this.network = null;
+    for (const remote of this.remotes.values()) remote.body.destroy(true);
+    this.remotes.clear();
 
+    this.router.goTo(location);
+    this.drawWorld();
+    this.createLocalNeighbors();
+    const spawnAngle = Math.random() * Math.PI * 2;
+    const spawnRadius = Phaser.Math.Between(150, 260);
+    this.player.setPosition(
+      WORLD.width / 2 + Math.cos(spawnAngle) * spawnRadius,
+      WORLD.height / 2 + Math.sin(spawnAngle) * spawnRadius,
+    );
+    this.moveTarget = null;
+    this.localCorrection = null;
+    this.updateRoomHud();
+    this.onlineCount = 1;
+    this.connectionStatus = "connecting";
+    this.network = createTownSquareTransport(this.transportCallbacks(), location);
     await this.reconnectMultiplayer(true);
+    this.showUiNotice(`Arrived in ${portalRoom(location.spaceId)?.label ?? "the new room"}.`);
+  }
+
+  private updateRoomHud(): void {
+    const location = this.router.current();
+    const label = this.hudElement?.querySelector<HTMLElement>(".brand small");
+    if (label) {
+      label.textContent = `Nashville · ${location.label ?? portalRoom(location.spaceId)?.label ?? (location.kind === "house" ? "Block Home" : "Town Square")}`;
+    }
   }
 
   private async reconnectMultiplayer(force = false): Promise<void> {

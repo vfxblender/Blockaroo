@@ -1,10 +1,6 @@
 import type { WorldLocation } from "../types/world";
 
-/**
- * The prototype only renders Town Square, but all movement is already scoped
- * to a location. Adding homes, private overworlds, and cities becomes a scene
- * routing problem rather than a database rewrite.
- */
+/** Keeps the active room stable while the user moves between interface tabs. */
 export class WorldRouter {
   private location: WorldLocation = {
     cityId: "nashville",

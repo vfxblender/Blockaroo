@@ -19,6 +19,40 @@ export interface FriendConnection {
   since: string;
 }
 
+export interface DirectMessage {
+  id: string;
+  senderId: string;
+  recipientId: string;
+  body: string | null;
+  ciphertext: string | null;
+  encryptionVersion: number | null;
+  clientNonce: string;
+  createdAt: string;
+  readAt: string | null;
+}
+
+export interface PortalRoomPresence {
+  id: string;
+  cityId: "nashville";
+  label: string;
+  kind: "town-square" | "overworld" | "theater";
+  tagline: string;
+  mapX: number;
+  mapY: number;
+  color: string;
+  event: boolean;
+  onlineCount: number | null;
+  friendUserIds: string[];
+}
+
+export interface PortalSnapshot {
+  cityId: "nashville";
+  cityName: "Nashville";
+  rooms: PortalRoomPresence[];
+  updatedAt: string;
+  live: boolean;
+}
+
 export interface SocialPost {
   id: string;
   authorId: string;

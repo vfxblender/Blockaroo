@@ -15,6 +15,12 @@ import {
   type StateRecord,
   type WorldDescriptor,
 } from "../../shared/worldProtocol.ts";
+import {
+  PUBLIC_PORTAL_ROOMS,
+  homeOwnerFromSpaceId,
+  isPortalRoomId,
+  isWorldSpaceId,
+} from "../../shared/portalRooms.ts";
 import { CircleCoordinator, type CircleParticipant } from "./circles.ts";
 import { hasBlockBetween } from "./worldSafety.ts";
 
@@ -103,7 +109,6 @@ interface IceServerResponse {
 const WORLD_WIDTH = 2200;
 const WORLD_HEIGHT = 1500;
 const ACTIVE_CITY_ID = "nashville";
-const ACTIVE_SPACE_ID = "town-square";
 const ROOM_PLAYER_LIMIT = 1000;
 const PLAYER_HALF_SIZE = 21;
 const DETAIL_RADIUS = 650;
@@ -161,6 +166,10 @@ export default {
 
     if (url.pathname === "/account" && request.method === "DELETE") {
       return deleteAccount(request, env, origin);
+    }
+
+    if (url.pathname === "/portal" && request.method === "GET") {
+      return portalSnapshot(request, env, origin);
     }
 
     if (url.pathname === "/session" && request.method === "POST") {
@@ -260,6 +269,28 @@ export class TownSquareRoom implements DurableObject {
   }
 
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/portal-status") {
+      const body = await request.json<{ friendUserIds?: unknown }>().catch(() => null);
+      const requestedFriends = new Set(
+        Array.isArray(body?.friendUserIds)
+          ? body.friendUserIds
+            .filter((value): value is string => typeof value === "string" && /^[0-9a-f-]{36}$/i.test(value))
+            .slice(0, 500)
+          : [],
+      );
+      const onlineFriends = new Set<string>();
+      for (const socket of this.socketsBySlot.values()) {
+        const attachment = this.readAttachment(socket);
+        if (attachment?.initialized && requestedFriends.has(attachment.authUserId)) {
+          onlineFriends.add(attachment.authUserId);
+        }
+      }
+      return Response.json({
+        onlineCount: this.socketsBySlot.size,
+        friendUserIds: [...onlineFriends],
+      });
+    }
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("Expected a WebSocket upgrade.", { status: 426 });
     }
@@ -1349,7 +1380,7 @@ async function createSocketSession(request: Request, env: Env, origin: string | 
   const body = await request.json<{ cityId?: unknown; spaceId?: unknown }>().catch(() => null);
   const cityId = typeof body?.cityId === "string" ? body.cityId.trim().toLowerCase() : "";
   const spaceId = typeof body?.spaceId === "string" ? body.spaceId.trim().toLowerCase() : "";
-  if (cityId !== ACTIVE_CITY_ID || spaceId !== ACTIVE_SPACE_ID) {
+  if (cityId !== ACTIVE_CITY_ID || !isWorldSpaceId(spaceId)) {
     return json({ error: "That Blockaroo space is not available." }, 404, origin, env);
   }
 
@@ -1369,6 +1400,19 @@ async function createSocketSession(request: Request, env: Env, origin: string | 
   ]);
   if (blockedUserIds === null) {
     return json({ error: "Your safety settings could not be loaded. Try again." }, 503, origin, env);
+  }
+  const homeOwnerId = homeOwnerFromSpaceId(spaceId);
+  if (homeOwnerId) {
+    if (user.is_anonymous !== false || !socialReady) {
+      return json({ error: "A permanent Blockaroo account is required to visit homes." }, 403, origin, env);
+    }
+    const canVisit = await canVisitHome(env, accessToken, homeOwnerId, user.id);
+    if (canVisit === null) {
+      return json({ error: "Block Home access could not be checked. Try again." }, 503, origin, env);
+    }
+    if (!canVisit) {
+      return json({ error: "That Block Home is not open to you." }, 403, origin, env);
+    }
   }
 
   const payload: TicketPayload = {
@@ -1396,7 +1440,7 @@ async function verifyTicket(ticket: string, secret: string): Promise<TicketPaylo
     || typeof payload.exp !== "number"
     || !Number.isFinite(payload.exp)
     || payload.cityId !== ACTIVE_CITY_ID
-    || payload.spaceId !== ACTIVE_SPACE_ID
+    || !isWorldSpaceId(payload.spaceId)
     || payload.exp < Math.floor(Date.now() / 1000)) return null;
   return {
     sub: payload.sub,
@@ -1410,6 +1454,94 @@ async function verifyTicket(ticket: string, secret: string): Promise<TicketPaylo
       ? payload.blockedUserIds.filter((value): value is string => typeof value === "string" && /^[0-9a-f-]{36}$/i.test(value)).slice(0, 200)
       : [],
   };
+}
+
+async function canVisitHome(
+  env: Env,
+  accessToken: string,
+  ownerId: string,
+  visitorId: string,
+): Promise<boolean | null> {
+  const response = await fetch(`${env.SUPABASE_URL.replace(/\/$/, "")}/rest/v1/rpc/can_visit_home`, {
+    method: "POST",
+    headers: {
+      apikey: env.SUPABASE_PUBLISHABLE_KEY,
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ home_owner: ownerId, visitor: visitorId }),
+  });
+  if (!response.ok) return null;
+  const allowed = await response.json<unknown>();
+  return allowed === true;
+}
+
+async function portalSnapshot(request: Request, env: Env, origin: string | null): Promise<Response> {
+  const authentication = await authenticateRequest(request, env);
+  if (authentication instanceof Response) return withCors(authentication, origin, env);
+  const friendUserIds = authentication.isAnonymous
+    ? []
+    : await loadAcceptedFriendIds(env, authentication.accessToken, authentication.userId);
+  if (friendUserIds === null) {
+    return json({ error: "Your Neighborhood presence could not be loaded." }, 503, origin, env);
+  }
+
+  const rooms = await Promise.all(PUBLIC_PORTAL_ROOMS.map(async room => {
+    try {
+      const roomId = env.TOWN_SQUARE.idFromName(`${room.cityId}:${room.id}`);
+      const response = await env.TOWN_SQUARE.get(roomId).fetch(new Request("https://room.blockaroo/portal-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ friendUserIds }),
+      }));
+      const status = response.ok
+        ? await response.json<{ onlineCount?: unknown; friendUserIds?: unknown }>()
+        : null;
+      return {
+        ...room,
+        onlineCount: typeof status?.onlineCount === "number"
+          ? Math.max(0, Math.floor(status.onlineCount))
+          : 0,
+        friendUserIds: Array.isArray(status?.friendUserIds)
+          ? status.friendUserIds.filter((value): value is string => typeof value === "string")
+          : [],
+      };
+    } catch {
+      return { ...room, onlineCount: 0, friendUserIds: [] as string[] };
+    }
+  }));
+
+  return json({
+    cityId: ACTIVE_CITY_ID,
+    cityName: "Nashville",
+    rooms,
+    updatedAt: new Date().toISOString(),
+  }, 200, origin, env);
+}
+
+async function loadAcceptedFriendIds(
+  env: Env,
+  accessToken: string,
+  userId: string,
+): Promise<string[] | null> {
+  const url = new URL(`${env.SUPABASE_URL.replace(/\/$/, "")}/rest/v1/neighbors`);
+  url.searchParams.set("or", `(user_id.eq.${userId},neighbor_id.eq.${userId})`);
+  url.searchParams.set("status", "eq.accepted");
+  url.searchParams.set("select", "user_id,neighbor_id");
+  url.searchParams.set("limit", "500");
+  const response = await fetch(url, {
+    headers: {
+      apikey: env.SUPABASE_PUBLISHABLE_KEY,
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+    },
+  });
+  if (!response.ok) return null;
+  const rows = await response.json<Array<{ user_id?: string; neighbor_id?: string }>>();
+  return [...new Set(rows.flatMap(row => {
+    const otherId = row.user_id === userId ? row.neighbor_id : row.user_id;
+    return typeof otherId === "string" && /^[0-9a-f-]{36}$/i.test(otherId) ? [otherId] : [];
+  }))];
 }
 
 async function checkSocialReadyProfile(env: Env, accessToken: string, userId: string): Promise<boolean> {

@@ -2,15 +2,13 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 import type { CircleGame, CircleMode, CircleSignalData } from "../../../shared/worldProtocol";
 import { getOrCreateAnonymousSession, supabase } from "../../services/supabase";
 import { WORLD } from "../config";
-import type { PlayerIdentity } from "../types/world";
+import type { PlayerIdentity, WorldLocation } from "../types/world";
 import type { BlockChatMessage, OnlinePlayer, TownSquareCallbacks, TownSquareTransport } from "./TownSquareTransport";
 
 interface HelloPayload {
   player: OnlinePlayer;
   replyRequested: boolean;
 }
-
-const CHANNEL_NAME = "city:nashville:town-square";
 
 export class RealtimeTownSquare implements TownSquareTransport {
   readonly mode = "supabase-fallback" as const;
@@ -26,7 +24,10 @@ export class RealtimeTownSquare implements TownSquareTransport {
   private lastDirectionX = 0;
   private lastDirectionY = 0;
 
-  constructor(private readonly callbacks: TownSquareCallbacks) {}
+  constructor(
+    private readonly callbacks: TownSquareCallbacks,
+    private readonly location: WorldLocation,
+  ) {}
 
   get connectionId(): string {
     return this._connectionId;
@@ -47,7 +48,7 @@ export class RealtimeTownSquare implements TownSquareTransport {
     this._connectionId = session.user.id;
     this.currentState = this.makeState(profile, x, y);
     const connectionId = this.connectionId;
-    const channel = supabase.channel(CHANNEL_NAME, {
+    const channel = supabase.channel(`city:${this.location.cityId}:${this.location.spaceId}`, {
       config: {
         presence: { key: connectionId },
         broadcast: { self: false, ack: false },

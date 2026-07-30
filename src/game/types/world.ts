@@ -5,6 +5,8 @@ export interface WorldLocation {
   cityId: CityId;
   spaceId: string;
   kind: SpaceKind;
+  label?: string;
+  color?: string;
 }
 
 export interface PlayerIdentity {
