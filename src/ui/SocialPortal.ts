@@ -21,6 +21,19 @@ import {
   recentHouseBlocks,
   type NeighborhoodThread,
 } from "../social/neighborhood";
+import {
+  HOME_FURNITURE_CATALOG,
+  HOME_FURNITURE_KINDS,
+  clampHomeCoordinate,
+  cloneHomeInterior,
+  createHomeFurniture,
+  defaultHomeInterior,
+  furnitureLabel,
+  normalizeHomeInterior,
+  type HomeFurnitureKind,
+  type HomeInteriorLayout,
+  type HomeLighting,
+} from "../social/homeInterior";
 import type {
   BlockHome,
   DirectMessage,
@@ -57,6 +70,16 @@ interface BlockPlanetViewerDrag {
   card: HTMLElement;
 }
 
+interface HomeFurnitureDrag {
+  pointerId: number;
+  furnitureId: string;
+  room: HTMLElement;
+  item: HTMLElement;
+  moved: boolean;
+  startX: number;
+  startY: number;
+}
+
 interface SocialPortalActions {
   onIdentityChange(profile: SocialProfile): void;
   onConnectToFriend(userId: string): void;
@@ -65,7 +88,7 @@ interface SocialPortalActions {
   onAccountReady(): void;
   onBlockedUsersChange(userIds: string[]): void;
   currentLocation(): WorldLocation;
-  onTravel(location: WorldLocation): Promise<void>;
+  onTravel(location: WorldLocation, interiorLayout?: HomeInteriorLayout): Promise<void>;
 }
 
 const MAP_LOCATIONS = ["", ...PUBLIC_PORTAL_ROOMS.map(room => room.label)];
@@ -100,7 +123,12 @@ export class SocialPortal {
   private suppressPlanetClickUntil = 0;
   private friends: FriendConnection[] = [];
   private directMessages: DirectMessage[] = [];
+  private neighborHomeInteriors = new Map<string, HomeInteriorLayout>();
   private expandedNeighborId: string | null = null;
+  private cutawayAvatarPositions = new Map<string, { x: number; y: number }>();
+  private homeDraft: HomeInteriorLayout | null = null;
+  private selectedHomeFurnitureId: string | null = null;
+  private homeFurnitureDrag: HomeFurnitureDrag | null = null;
   private neighborSearchQuery = "";
   private neighborSearchResults: SocialProfile[] = [];
   private portalSnapshot: PortalSnapshot | null = null;
@@ -138,10 +166,19 @@ export class SocialPortal {
     document.body.append(this.root);
     this.root.addEventListener("click", event => this.handleClick(event));
     this.root.addEventListener("submit", event => void this.handleSubmit(event));
-    this.root.addEventListener("pointerdown", event => this.handlePlanetPointerDown(event));
-    this.root.addEventListener("pointermove", event => this.handlePlanetPointerMove(event), { passive: false });
-    this.root.addEventListener("pointerup", event => this.handlePlanetPointerEnd(event));
-    this.root.addEventListener("pointercancel", event => this.handlePlanetPointerEnd(event));
+    this.root.addEventListener("pointerdown", event => {
+      if (!this.handleHomePointerDown(event)) this.handlePlanetPointerDown(event);
+    });
+    this.root.addEventListener("pointermove", event => {
+      if (!this.handleHomePointerMove(event)) this.handlePlanetPointerMove(event);
+    }, { passive: false });
+    this.root.addEventListener("pointerup", event => {
+      if (!this.handleHomePointerEnd(event)) this.handlePlanetPointerEnd(event);
+    });
+    this.root.addEventListener("pointercancel", event => {
+      if (!this.handleHomePointerEnd(event)) this.handlePlanetPointerEnd(event);
+    });
+    this.root.addEventListener("input", event => this.handleHomeSettingInput(event));
     this.root.addEventListener("keydown", event => this.handlePlanetKeyDown(event));
     this.root.addEventListener("wheel", event => this.handlePlanetViewerWheel(event), { passive: false });
     this.unsubscribeAuth = this.service.onAccountChange(() => void this.initialize());
@@ -353,20 +390,33 @@ export class SocialPortal {
         this.planetUpdatesWaiting = false;
       }
       if (tab === "friends") {
-        const [friends, messages, snapshot] = await Promise.all([
-          this.service.loadFriends(),
+        const friends = await this.service.loadFriends();
+        const [messages, snapshot, homeInteriors] = await Promise.all([
           this.service.loadDirectMessages(),
           this.service.loadPortalSnapshot(),
+          this.service.loadHomeInteriors(
+            friends.filter(friend => friend.status === "accepted").map(friend => friend.userId),
+          ),
         ]);
         if (generation !== this.loadGeneration) return;
         this.friends = friends;
         this.directMessages = messages;
         this.portalSnapshot = snapshot;
+        this.neighborHomeInteriors = homeInteriors;
       }
       if (tab === "home") {
         const home = await this.service.loadHome(viewedHomeId ?? this.account.userId);
         if (generation !== this.loadGeneration) return;
         this.home = home;
+        if (home.ownerId === this.account.userId) {
+          this.homeDraft = cloneHomeInterior(home.interiorLayout);
+          if (!this.homeDraft.furniture.some(item => item.id === this.selectedHomeFurnitureId)) {
+            this.selectedHomeFurnitureId = this.homeDraft.furniture[0]?.id ?? null;
+          }
+        } else {
+          this.homeDraft = null;
+          this.selectedHomeFurnitureId = null;
+        }
       }
       if (tab === "alerts") {
         const [friends, invitations, blockedProfiles, messages] = await Promise.all([
@@ -850,6 +900,8 @@ export class SocialPortal {
     const status = room?.label
       ?? (isRecentlyOnline(friend.profile.lastSeenAt) ? "Online recently" : "Offline");
     const houseBlocks = recentHouseBlocks(thread.messages, 10);
+    const interiorLayout = this.neighborHomeInteriors.get(friend.userId)
+      ?? defaultHomeInterior(friend.profile.blockColor);
     return `
       <article class="neighbor-property ${expanded ? "is-expanded" : ""} ${thread.unreadCount ? "has-unread" : ""}" data-neighbor-property="${escapeAttribute(friend.userId)}">
         <button class="neighbor-property-summary" data-social-action="toggle-neighbor" data-user-id="${escapeAttribute(friend.userId)}" aria-expanded="${expanded}">
@@ -868,7 +920,7 @@ export class SocialPortal {
                 <div><span>PRIVATE CHAT</span><strong>${escapeHtml(friend.profile.displayName)}</strong></div>
                 <div>
                   ${room ? `<button data-social-action="travel-room" data-room-id="${escapeAttribute(room.id)}">Join in ${escapeHtml(room.label)}</button>` : ""}
-                  <button data-social-action="knock-home" data-user-id="${escapeAttribute(friend.userId)}">Visit home</button>
+                  <button data-social-action="knock-home" data-user-id="${escapeAttribute(friend.userId)}">Enter live home</button>
                 </div>
               </header>
               <div class="neighbor-message-list" data-direct-message-list="${escapeAttribute(friend.userId)}" aria-live="polite">
@@ -883,10 +935,12 @@ export class SocialPortal {
             </section>
             <aside class="neighbor-house-panel" style="--house-color:${escapeAttribute(friend.profile.blockColor)}">
               <span class="house-owner">${escapeHtml(friend.profile.displayName)}’s Block Home</span>
-              ${this.renderHouseShell(friend.profile, thread.unreadCount > 0, true)}
-              <div class="house-message-blocks" data-house-message-blocks="${escapeAttribute(friend.userId)}" aria-label="Latest private message blocks">
-                ${houseBlocks.map(message => `<i class="${message.senderId === this.account?.userId ? "is-mine" : "is-theirs"}" title="${escapeAttribute(message.body ?? "Encrypted message")}"></i>`).join("")}
-              </div>
+              ${this.renderHomeInterior(interiorLayout, {
+                ownerId: friend.userId,
+                avatarColor: this.profile?.blockColor ?? "#ff6b6b",
+                avatarLabel: "You",
+                messageBlocks: houseBlocks,
+              })}
               <p>Only you and ${escapeHtml(friend.profile.displayName)} can see these message blocks.</p>
             </aside>
           </div>
@@ -900,6 +954,85 @@ export class SocialPortal {
       <span class="property-house ${large ? "is-large" : ""} ${unread ? "is-lit" : ""}" style="--house-color:${escapeAttribute(profile.blockColor)}" aria-hidden="true">
         <i class="house-roof"></i><i class="house-body"></i><i class="house-door"></i><i class="house-window"></i><i class="house-mailbox"></i>
       </span>
+    `;
+  }
+
+  private renderHomeInterior(
+    layoutValue: HomeInteriorLayout,
+    options: {
+      ownerId: string;
+      avatarColor: string;
+      avatarLabel: string;
+      editable?: boolean;
+      messageBlocks?: readonly DirectMessage[];
+      standalone?: boolean;
+    },
+  ): string {
+    const layout = normalizeHomeInterior(layoutValue, options.avatarColor);
+    const avatar = this.cutawayAvatarPositions.get(options.ownerId) ?? { x: 50, y: 80 };
+    const editable = Boolean(options.editable);
+    const messageBlocks = options.messageBlocks ?? [];
+    const furniture = [...layout.furniture]
+      .sort((left, right) => left.y - right.y)
+      .map(item => {
+        const selected = editable && item.id === this.selectedHomeFurnitureId;
+        const tag = editable ? "button" : "span";
+        const action = editable ? ` data-social-action="select-home-furniture"` : "";
+        return `
+          <${tag}
+            ${editable ? `type="button"` : ""}
+            class="home-furniture furniture-${item.kind} ${selected ? "is-selected" : ""}"
+            style="--furniture-x:${item.x};--furniture-y:${item.y};--furniture-rotation:${item.rotation}deg;--furniture-color:${escapeAttribute(item.color)}"
+            data-home-furniture-id="${escapeAttribute(item.id)}"
+            data-furniture-kind="${item.kind}"
+            ${action}
+            aria-label="${escapeAttribute(`${furnitureLabel(item.kind)}${editable ? ", drag to move" : ""}`)}"
+          ><i aria-hidden="true"></i><small>${escapeHtml(furnitureLabel(item.kind))}</small></${tag}>
+        `;
+      })
+      .join("");
+    const shelf = messageBlocks.length
+      ? `
+        <div class="home-message-shelf" aria-label="Latest private message blocks">
+          <span>PRIVATE SHELF</span>
+          <div class="house-message-blocks" data-house-message-blocks="${escapeAttribute(options.ownerId)}">
+            ${messageBlocks.map(message => `<i class="${message.senderId === this.account?.userId ? "is-mine" : "is-theirs"}" title="${escapeAttribute(message.body ?? "Encrypted message")}"></i>`).join("")}
+          </div>
+        </div>
+      `
+      : "";
+    return `
+      <div
+        class="home-cutaway-block lighting-${layout.lighting} ${options.standalone ? "is-standalone" : ""} ${editable ? "is-editable" : ""}"
+        style="--home-wall-color:${escapeAttribute(layout.wallColor)};--home-floor-color:${escapeAttribute(layout.floorColor)}"
+        data-home-interior
+        data-home-owner-id="${escapeAttribute(options.ownerId)}"
+        data-home-editable="${editable}"
+      >
+        <div class="home-cutaway-top"><span>BLOCK HOME · INTERIOR</span><small>${editable ? "Drag furniture · tap floor to move" : "Tap the floor to move"}</small></div>
+        <div class="home-cutaway-frame">
+          <div class="home-cutaway-room" data-home-move-surface>
+            <span class="home-cutaway-window" aria-hidden="true"><i></i></span>
+            <span class="home-cutaway-door" aria-hidden="true"></span>
+            ${furniture}
+            ${shelf}
+            <span
+              class="home-cutaway-avatar"
+              style="--avatar-x:${avatar.x};--avatar-y:${avatar.y};--avatar-color:${escapeAttribute(options.avatarColor)}"
+              data-home-avatar="${escapeAttribute(options.ownerId)}"
+            ><i></i><small>${escapeHtml(options.avatarLabel)}</small></span>
+          </div>
+        </div>
+        <div class="home-cutaway-controls">
+          <span>Move inside</span>
+          <div>
+            <button type="button" data-social-action="move-cutaway" data-owner-id="${escapeAttribute(options.ownerId)}" data-direction="left" aria-label="Move left">←</button>
+            <button type="button" data-social-action="move-cutaway" data-owner-id="${escapeAttribute(options.ownerId)}" data-direction="up" aria-label="Move up">↑</button>
+            <button type="button" data-social-action="move-cutaway" data-owner-id="${escapeAttribute(options.ownerId)}" data-direction="down" aria-label="Move down">↓</button>
+            <button type="button" data-social-action="move-cutaway" data-owner-id="${escapeAttribute(options.ownerId)}" data-direction="right" aria-label="Move right">→</button>
+          </div>
+        </div>
+      </div>
     `;
   }
 
@@ -989,6 +1122,9 @@ export class SocialPortal {
   private renderHome(): string {
     if (!this.home) return `<div class="portal-empty"><h2>This Block Home is unavailable.</h2></div>`;
     const ownHome = this.home.ownerId === this.account?.userId;
+    const interiorLayout = ownHome
+      ? this.homeDraft ?? this.home.interiorLayout
+      : this.home.interiorLayout;
     const gallery = this.home.pinnedPosts.length
       ? this.home.pinnedPosts.map(post => `
           <article class="home-memory">
@@ -1006,21 +1142,61 @@ export class SocialPortal {
           ${!ownHome ? `<button class="primary-action" data-social-action="connect" data-user-id="${escapeAttribute(this.home.ownerId)}">Connect</button>` : ""}
         </header>
         ${!ownHome && this.home.connectedAt ? `<div class="shared-history"><span>HOW YOU MET</span><strong>Nashville Town Square</strong><small>Connected ${formatDate(this.home.connectedAt)}</small></div>` : ""}
-        <div class="home-wall">${gallery}</div>
+        <div class="home-interior-stage">
+          <div class="home-interior-heading">
+            <div><span class="eyebrow">${ownHome ? "YOUR PLAYABLE ROOM" : "SHARED ROOM PREVIEW"}</span><h2>${ownHome ? "Build the inside of your block." : `Inside ${escapeHtml(this.home.profile.displayName)}’s block.`}</h2></div>
+            <p>${ownHome ? "Move furniture now, save it, then enter the live room." : "Tap the floor to walk around here, or enter live when the door is open."}</p>
+          </div>
+          ${this.renderHomeInterior(interiorLayout, {
+            ownerId: this.home.ownerId,
+            avatarColor: this.profile?.blockColor ?? this.home.profile.blockColor,
+            avatarLabel: "You",
+            editable: ownHome,
+            standalone: true,
+          })}
+        </div>
         ${ownHome ? this.renderHomeEditor() : `
-          <div class="home-actions"><button data-social-action="knock-home" data-user-id="${escapeAttribute(this.home.ownerId)}">Visit shared home</button><button data-social-action="invite-home" data-user-id="${escapeAttribute(this.home.ownerId)}">Invite them to my home</button></div>
+          <div class="home-actions"><button data-social-action="knock-home" data-user-id="${escapeAttribute(this.home.ownerId)}">Enter shared live home</button><button data-social-action="invite-home" data-user-id="${escapeAttribute(this.home.ownerId)}">Invite them to my home</button></div>
         `}
-        ${ownHome ? `<div class="home-actions"><button class="primary-action" data-social-action="enter-own-home">Enter my live Block Home</button></div>` : ""}
+        ${ownHome ? `<div class="home-actions live-home-actions"><button class="primary-action" data-social-action="enter-own-home">Save & enter my live Block Home</button></div>` : ""}
+        <div class="home-memory-heading"><span class="eyebrow">WALL MEMORIES</span><h2>Pinned Block Posts</h2></div>
+        <div class="home-wall">${gallery}</div>
       </section>
     `;
   }
 
   private renderHomeEditor(): string {
     if (!this.home || !this.profile) return "";
+    const draft = this.homeDraft ?? cloneHomeInterior(this.home.interiorLayout);
+    const selected = draft.furniture.find(item => item.id === this.selectedHomeFurnitureId) ?? null;
     return `
-      <details class="home-editor">
-        <summary>Edit my Block Home</summary>
+      <details class="home-editor" open>
+        <summary>Decorate and edit my Block Home</summary>
         <form data-social-form="home">
+          <section class="home-decorator">
+            <div class="home-decorator-heading">
+              <div><span class="eyebrow">INTERIOR EDITOR</span><h3>Furniture, color, and light</h3></div>
+              <p>Drag an item in the room. Select it to rotate, recolor, or remove it.</p>
+            </div>
+            <div class="home-room-settings">
+              <label>Wall color<input type="color" value="${escapeAttribute(draft.wallColor)}" data-home-setting="wallColor" /></label>
+              <label>Floor color<input type="color" value="${escapeAttribute(draft.floorColor)}" data-home-setting="floorColor" /></label>
+              <label>Lighting<select data-home-setting="lighting">${homeLightingOptions(draft.lighting)}</select></label>
+            </div>
+            <div class="home-furniture-catalog" aria-label="Add furniture">
+              ${HOME_FURNITURE_CATALOG.map(item => `<button type="button" data-social-action="add-home-furniture" data-furniture-kind="${item.kind}"><i style="--catalog-color:${escapeAttribute(item.color)}"></i><span>Add ${escapeHtml(item.label)}</span></button>`).join("")}
+            </div>
+            <div class="home-selected-furniture ${selected ? "" : "is-empty"}">
+              ${selected ? `
+                <div><span>SELECTED</span><strong>${escapeHtml(furnitureLabel(selected.kind))}</strong></div>
+                <label>Color<input type="color" value="${escapeAttribute(selected.color)}" data-home-setting="furnitureColor" /></label>
+                <button type="button" data-social-action="rotate-home-furniture">Rotate 45°</button>
+                <button type="button" class="danger-text-button" data-social-action="remove-home-furniture">Remove</button>
+              ` : `<p>Select a piece of furniture in the room to edit it.</p>`}
+              <button type="button" data-social-action="reset-home-interior">Reset room</button>
+            </div>
+          </section>
+          <div class="home-profile-editor-heading"><span class="eyebrow">HOME DETAILS</span><h3>Name, profile, and door</h3></div>
           <div class="form-grid">
             <label>Display name<input name="displayName" maxlength="18" required value="${escapeAttribute(this.profile.displayName)}" /></label>
             <label>Handle<input name="handle" maxlength="20" placeholder="your_handle" value="${escapeAttribute(this.profile.handle ?? "")}" /></label>
@@ -1032,7 +1208,7 @@ export class SocialPortal {
             </select></label>
             <label class="span-two">Welcome note<input name="welcomeNote" maxlength="180" value="${escapeAttribute(this.home.welcomeNote)}" /></label>
           </div>
-          <button class="primary-action">Save home</button>
+          <button class="primary-action">Save Block Home</button>
         </form>
       </details>
     `;
@@ -1123,6 +1299,51 @@ export class SocialPortal {
       this.neighborSearchQuery = "";
       this.neighborSearchResults = [];
       this.render();
+      return;
+    }
+    if (action === "move-cutaway" && target.dataset.ownerId && isCutawayDirection(target.dataset.direction)) {
+      this.moveCutawayAvatar(target.dataset.ownerId, target.dataset.direction);
+      return;
+    }
+    if (
+      action === "add-home-furniture"
+      && target.dataset.furnitureKind
+      && isHomeFurnitureKind(target.dataset.furnitureKind)
+      && this.homeDraft
+      && this.homeDraft.furniture.length < 24
+    ) {
+      const item = createHomeFurniture(target.dataset.furnitureKind, this.homeDraft.furniture.length + 1);
+      this.homeDraft.furniture.push(item);
+      this.selectedHomeFurnitureId = item.id;
+      this.renderPreservingBodyScroll();
+      return;
+    }
+    if (action === "select-home-furniture" && target.dataset.homeFurnitureId && this.homeDraft) {
+      this.selectedHomeFurnitureId = target.dataset.homeFurnitureId;
+      this.renderPreservingBodyScroll();
+      return;
+    }
+    if (action === "rotate-home-furniture" && this.homeDraft && this.selectedHomeFurnitureId) {
+      this.homeDraft.furniture = this.homeDraft.furniture.map(item => (
+        item.id === this.selectedHomeFurnitureId
+          ? { ...item, rotation: (item.rotation + 45) % 360 }
+          : item
+      ));
+      this.renderPreservingBodyScroll();
+      return;
+    }
+    if (action === "remove-home-furniture" && this.homeDraft && this.selectedHomeFurnitureId) {
+      this.homeDraft.furniture = this.homeDraft.furniture
+        .filter(item => item.id !== this.selectedHomeFurnitureId);
+      this.selectedHomeFurnitureId = this.homeDraft.furniture[0]?.id ?? null;
+      this.renderPreservingBodyScroll();
+      return;
+    }
+    if (action === "reset-home-interior" && this.profile) {
+      if (!window.confirm("Reset the room to Blockaroo's furnished default?")) return;
+      this.homeDraft = defaultHomeInterior(this.profile.blockColor);
+      this.selectedHomeFurnitureId = this.homeDraft.furniture[0]?.id ?? null;
+      this.renderPreservingBodyScroll();
       return;
     }
     if (action === "open-neighbor-alert" && target.dataset.userId) {
@@ -1235,10 +1456,6 @@ export class SocialPortal {
     }
     if (action === "view-home" && target.dataset.userId) {
       const userId = target.dataset.userId;
-      if (userId !== this.account?.userId) {
-        const access = await this.runHomeAccess(userId);
-        if (access !== "open") return;
-      }
       this.viewedHomeId = userId;
       this.modal = null;
       this.selectedPlanetPostId = null;
@@ -1256,6 +1473,21 @@ export class SocialPortal {
       return;
     }
     if (action === "enter-own-home" && this.account && !this.account.isAnonymous) {
+      if (this.home && this.homeDraft) {
+        const saved = await this.runAction(async () => {
+          await this.service.updateHome({
+            name: this.home!.name,
+            accessMode: this.home!.accessMode,
+            welcomeNote: this.home!.welcomeNote,
+            interiorLayout: this.homeDraft!,
+          });
+          this.home = {
+            ...this.home!,
+            interiorLayout: cloneHomeInterior(this.homeDraft!),
+          };
+        }, "Block Home saved.");
+        if (!saved) return;
+      }
       await this.travelToHome(this.account.userId);
       return;
     }
@@ -1472,12 +1704,21 @@ export class SocialPortal {
             name: String(data.get("homeName") ?? ""),
             accessMode,
             welcomeNote: String(data.get("welcomeNote") ?? ""),
+            interiorLayout: this.homeDraft ?? this.home!.interiorLayout,
           }),
         ]);
       }, "Block Home saved.");
-      if (saved && updatedProfile) {
-        this.profile = updatedProfile;
-        this.actions.onIdentityChange(updatedProfile);
+      const savedProfile = updatedProfile as SocialProfile | null;
+      if (saved && savedProfile) {
+        this.profile = savedProfile;
+        this.actions.onIdentityChange(savedProfile);
+        this.home = {
+          ...this.home,
+          interiorLayout: normalizeHomeInterior(
+            this.homeDraft ?? this.home.interiorLayout,
+            savedProfile.blockColor,
+          ),
+        };
       }
       await this.loadCurrentTab();
     }
@@ -1506,7 +1747,7 @@ export class SocialPortal {
 
   private animateMessageIntoHouse(friendUserId: string): void {
     const form = this.root.querySelector<HTMLElement>(`[data-social-form="direct-message"][data-user-id="${CSS.escape(friendUserId)}"]`);
-    const house = this.root.querySelector<HTMLElement>(`[data-neighbor-property="${CSS.escape(friendUserId)}"] .neighbor-house-panel .property-house`);
+    const house = this.root.querySelector<HTMLElement>(`[data-neighbor-property="${CSS.escape(friendUserId)}"] .neighbor-house-panel .home-cutaway-block`);
     if (!form || !house) return;
     const start = form.getBoundingClientRect();
     const destination = house.getBoundingClientRect();
@@ -1618,13 +1859,26 @@ export class SocialPortal {
     }
     const friend = this.friends.find(candidate => candidate.userId === ownerId);
     const profile = ownerId === this.account?.userId ? this.profile : friend?.profile;
+    let interiorLayout = ownerId === this.home?.ownerId
+      ? this.homeDraft ?? this.home.interiorLayout
+      : this.neighborHomeInteriors.get(ownerId);
+    if (!interiorLayout) {
+      try {
+        const home = await this.service.loadHome(ownerId);
+        interiorLayout = home.interiorLayout;
+        this.neighborHomeInteriors.set(ownerId, cloneHomeInterior(interiorLayout));
+      } catch (error) {
+        this.actions.onNotice(errorMessage(error));
+        return;
+      }
+    }
     await this.actions.onTravel({
       cityId: "nashville",
       spaceId,
       kind: "house",
       label: profile ? `${profile.displayName}’s Block Home` : "Block Home",
       color: profile?.blockColor ?? "#ff6b6b",
-    });
+    }, normalizeHomeInterior(interiorLayout, profile?.blockColor));
   }
 
   private async loadMoreFeed(): Promise<void> {
@@ -1818,6 +2072,148 @@ export class SocialPortal {
     if (remainingPosts <= BLOCK_PLANET_SLOTS.length && this.feedHasMore) {
       void this.loadMoreFeed();
     }
+  }
+
+  private handleHomePointerDown(event: PointerEvent): boolean {
+    if (event.button !== 0) return false;
+    const room = (event.target as HTMLElement).closest<HTMLElement>("[data-home-move-surface]");
+    if (!room) return false;
+    const interior = room.closest<HTMLElement>("[data-home-interior]");
+    const ownerId = interior?.dataset.homeOwnerId;
+    if (!interior || !ownerId) return false;
+
+    const furniture = (event.target as HTMLElement).closest<HTMLElement>("[data-home-furniture-id]");
+    if (furniture) {
+      if (interior.dataset.homeEditable !== "true" || !this.homeDraft) return true;
+      const furnitureId = furniture.dataset.homeFurnitureId;
+      if (!furnitureId || !this.homeDraft.furniture.some(item => item.id === furnitureId)) return true;
+      event.preventDefault();
+      this.selectedHomeFurnitureId = furnitureId;
+      this.homeFurnitureDrag = {
+        pointerId: event.pointerId,
+        furnitureId,
+        room,
+        item: furniture,
+        moved: false,
+        startX: event.clientX,
+        startY: event.clientY,
+      };
+      furniture.setPointerCapture?.(event.pointerId);
+      furniture.classList.add("is-dragging", "is-selected");
+      return true;
+    }
+
+    if ((event.target as HTMLElement).closest("button,input,select,label")) return false;
+    event.preventDefault();
+    this.moveCutawayAvatarToPoint(ownerId, room, event.clientX, event.clientY);
+    return true;
+  }
+
+  private handleHomePointerMove(event: PointerEvent): boolean {
+    const drag = this.homeFurnitureDrag;
+    if (!drag || drag.pointerId !== event.pointerId || !this.homeDraft) return false;
+    event.preventDefault();
+    const rect = drag.room.getBoundingClientRect();
+    const x = clampHomeCoordinate(((event.clientX - rect.left) / Math.max(1, rect.width)) * 100, 5, 95);
+    const y = clampHomeCoordinate(((event.clientY - rect.top) / Math.max(1, rect.height)) * 100, 20, 90);
+    if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 4) drag.moved = true;
+    this.homeDraft.furniture = this.homeDraft.furniture.map(item => (
+      item.id === drag.furnitureId ? { ...item, x, y } : item
+    ));
+    drag.item.style.setProperty("--furniture-x", String(x));
+    drag.item.style.setProperty("--furniture-y", String(y));
+    return true;
+  }
+
+  private handleHomePointerEnd(event: PointerEvent): boolean {
+    const drag = this.homeFurnitureDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return false;
+    this.homeFurnitureDrag = null;
+    drag.item.releasePointerCapture?.(event.pointerId);
+    drag.item.classList.remove("is-dragging");
+    event.preventDefault();
+    this.renderPreservingBodyScroll();
+    return true;
+  }
+
+  private handleHomeSettingInput(event: Event): void {
+    if (!this.homeDraft || !this.home || this.home.ownerId !== this.account?.userId) return;
+    const control = (event.target as HTMLElement).closest<HTMLInputElement | HTMLSelectElement>("[data-home-setting]");
+    if (!control) return;
+    const setting = control.dataset.homeSetting;
+    const ownerSelector = CSS.escape(this.home.ownerId);
+    const interiors = this.root.querySelectorAll<HTMLElement>(`[data-home-interior][data-home-owner-id="${ownerSelector}"]`);
+    if (setting === "wallColor" && isHexColor(control.value)) {
+      this.homeDraft.wallColor = control.value.toLowerCase();
+      interiors.forEach(interior => interior.style.setProperty("--home-wall-color", this.homeDraft!.wallColor));
+      return;
+    }
+    if (setting === "floorColor" && isHexColor(control.value)) {
+      this.homeDraft.floorColor = control.value.toLowerCase();
+      interiors.forEach(interior => interior.style.setProperty("--home-floor-color", this.homeDraft!.floorColor));
+      return;
+    }
+    if (setting === "lighting" && isHomeLighting(control.value)) {
+      this.homeDraft.lighting = control.value;
+      interiors.forEach(interior => {
+        interior.classList.remove("lighting-day", "lighting-warm", "lighting-night");
+        interior.classList.add(`lighting-${control.value}`);
+      });
+      return;
+    }
+    if (setting === "furnitureColor" && isHexColor(control.value) && this.selectedHomeFurnitureId) {
+      const color = control.value.toLowerCase();
+      this.homeDraft.furniture = this.homeDraft.furniture.map(item => (
+        item.id === this.selectedHomeFurnitureId ? { ...item, color } : item
+      ));
+      this.root
+        .querySelectorAll<HTMLElement>(`[data-home-furniture-id="${CSS.escape(this.selectedHomeFurnitureId)}"]`)
+        .forEach(item => item.style.setProperty("--furniture-color", color));
+    }
+  }
+
+  private moveCutawayAvatar(
+    ownerId: string,
+    direction: "left" | "right" | "up" | "down",
+  ): void {
+    const current = this.cutawayAvatarPositions.get(ownerId) ?? { x: 50, y: 80 };
+    const next = {
+      x: clampHomeCoordinate(current.x + (direction === "left" ? -7 : direction === "right" ? 7 : 0), 7, 93),
+      y: clampHomeCoordinate(current.y + (direction === "up" ? -7 : direction === "down" ? 7 : 0), 54, 88),
+    };
+    this.setCutawayAvatarPosition(ownerId, next);
+  }
+
+  private moveCutawayAvatarToPoint(
+    ownerId: string,
+    room: HTMLElement,
+    clientX: number,
+    clientY: number,
+  ): void {
+    const rect = room.getBoundingClientRect();
+    this.setCutawayAvatarPosition(ownerId, {
+      x: clampHomeCoordinate(((clientX - rect.left) / Math.max(1, rect.width)) * 100, 7, 93),
+      y: clampHomeCoordinate(((clientY - rect.top) / Math.max(1, rect.height)) * 100, 54, 88),
+    });
+  }
+
+  private setCutawayAvatarPosition(ownerId: string, position: { x: number; y: number }): void {
+    this.cutawayAvatarPositions.set(ownerId, position);
+    this.root
+      .querySelectorAll<HTMLElement>(`[data-home-avatar="${CSS.escape(ownerId)}"]`)
+      .forEach(avatar => {
+        avatar.style.setProperty("--avatar-x", String(position.x));
+        avatar.style.setProperty("--avatar-y", String(position.y));
+      });
+  }
+
+  private renderPreservingBodyScroll(): void {
+    const scrollTop = this.root.querySelector<HTMLElement>(".social-body")?.scrollTop ?? 0;
+    this.render();
+    requestAnimationFrame(() => {
+      const body = this.root.querySelector<HTMLElement>(".social-body");
+      if (body) body.scrollTop = scrollTop;
+    });
   }
 
   private handlePlanetPointerDown(event: PointerEvent): void {
@@ -2128,7 +2524,12 @@ export class SocialPortal {
     this.dismissedPlanetPostIds.clear();
     this.friends = [];
     this.directMessages = [];
+    this.neighborHomeInteriors.clear();
     this.expandedNeighborId = null;
+    this.cutawayAvatarPositions.clear();
+    this.homeDraft = null;
+    this.selectedHomeFurnitureId = null;
+    this.homeFurnitureDrag = null;
     this.neighborSearchQuery = "";
     this.neighborSearchResults = [];
     this.portalSnapshot = null;
@@ -2199,6 +2600,17 @@ function homeAccessOptions(selected: BlockHome["accessMode"]): string {
   return options.map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""}>${label}</option>`).join("");
 }
 
+function homeLightingOptions(selected: HomeLighting): string {
+  const options: Array<[HomeLighting, string]> = [
+    ["day", "Bright day"],
+    ["warm", "Warm evening"],
+    ["night", "Night lights"],
+  ];
+  return options
+    .map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""}>${label}</option>`)
+    .join("");
+}
+
 function pinPosition(location: string, index: number): { x: number; y: number } {
   const anchors: Record<string, { x: number; y: number }> = {
     "Town Square": { x: 49, y: 48 },
@@ -2245,6 +2657,22 @@ function isPortalTab(value: unknown): value is PortalTab {
 
 function isHomeAccess(value: FormDataEntryValue | null): value is BlockHome["accessMode"] {
   return value === "open" || value === "knock" || value === "invite" || value === "dnd" || value === "away";
+}
+
+function isHomeFurnitureKind(value: string): value is HomeFurnitureKind {
+  return HOME_FURNITURE_KINDS.some(kind => kind === value);
+}
+
+function isHomeLighting(value: string): value is HomeLighting {
+  return value === "day" || value === "warm" || value === "night";
+}
+
+function isCutawayDirection(value: string | undefined): value is "left" | "right" | "up" | "down" {
+  return value === "left" || value === "right" || value === "up" || value === "down";
+}
+
+function isHexColor(value: string): boolean {
+  return /^#[0-9a-f]{6}$/i.test(value);
 }
 
 function errorMessage(error: unknown): string {
