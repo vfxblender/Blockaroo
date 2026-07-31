@@ -1,3 +1,5 @@
+import type { HomeInteriorLayout } from "./homeInterior";
+
 export interface SocialProfile {
   userId: string;
   displayName: string;
@@ -71,6 +73,7 @@ export interface BlockHome {
   name: string;
   accessMode: "open" | "knock" | "invite" | "dnd" | "away";
   welcomeNote: string;
+  interiorLayout: HomeInteriorLayout;
   profile: SocialProfile;
   pinnedPosts: SocialPost[];
   connectedAt: string | null;

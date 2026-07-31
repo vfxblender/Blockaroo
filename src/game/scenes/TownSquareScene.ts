@@ -9,6 +9,12 @@ import { portalRoom } from "../../../shared/portalRooms";
 import { CircleVoice } from "../../circles/CircleVoice";
 import { SocialPortal } from "../../ui/SocialPortal";
 import { CircleExperience } from "../../ui/CircleExperience";
+import {
+  defaultHomeInterior,
+  normalizeHomeInterior,
+  type HomeFurniture,
+  type HomeInteriorLayout,
+} from "../../social/homeInterior";
 import { PALETTE, WORLD } from "../config";
 import { loadProfile, saveProfile } from "../systems/LocalProfile";
 import { LOCAL_TOWN_NEIGHBORS, type LocalTownNeighbor } from "../systems/LocalTownNeighbors";
@@ -38,6 +44,8 @@ const MAX_IMAGE_DATA_URL_CHARS = 140_000;
 const MAX_TEMPORARY_GIF_BYTES = 256 * 1024;
 const MAX_GIF_DATA_URL_CHARS = Math.ceil(MAX_TEMPORARY_GIF_BYTES * 4 / 3) + 64;
 const SUPPORTED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const FULL_WORLD_BOUNDS = { x: 0, y: 0, width: WORLD.width, height: WORLD.height };
+const HOME_MOVEMENT_BOUNDS = { x: 470, y: 675, width: 1260, height: 410 };
 
 export class TownSquareScene extends Phaser.Scene {
   private profile = loadProfile();
@@ -78,6 +86,13 @@ export class TownSquareScene extends Phaser.Scene {
   private mutedUserIds = new Set<string>(loadStoredIds("blockaroo.muted-users"));
   private blockedUserIds = new Set<string>(loadStoredIds("blockaroo.blocked-users"));
   private worldLayer: Phaser.GameObjects.Container | null = null;
+  private activeHomeInterior: HomeInteriorLayout | null = null;
+  private movementBounds = {
+    minX: 21,
+    maxX: WORLD.width - 21,
+    minY: 21,
+    maxY: WORLD.height - 21,
+  };
 
   constructor() { super("TownSquare"); }
 
@@ -91,6 +106,7 @@ export class TownSquareScene extends Phaser.Scene {
     this.player = this.makePlayer(this.profile, 1100 + Math.cos(spawnAngle) * spawnRadius, 750 + Math.sin(spawnAngle) * spawnRadius, true);
     this.nameLabel = this.player.getAt(1) as Phaser.GameObjects.Text;
     this.physics.add.existing(this.player);
+    this.configureMovementBounds(this.router.current());
     (this.player.body as Phaser.Physics.Arcade.Body).setCollideWorldBounds(true);
     this.cameras.main.startFollow(this.player, true, 0.12, 0.12);
     this.cameras.main.setZoom(Phaser.Math.Clamp(Math.min(this.scale.width / 720, this.scale.height / 500), 0.72, 1.15));
@@ -169,11 +185,21 @@ export class TownSquareScene extends Phaser.Scene {
         this.localCorrection = null;
       }
     }
+    this.player.x = Phaser.Math.Clamp(this.player.x, this.movementBounds.minX, this.movementBounds.maxX);
+    this.player.y = Phaser.Math.Clamp(this.player.y, this.movementBounds.minY, this.movementBounds.maxY);
     const blend = 1 - Math.exp(-delta * 0.012);
     for (const remote of this.remotes.values()) {
       const predictionSeconds = Phaser.Math.Clamp((Date.now() - remote.updatedAt) / 1000, 0, 4);
-      const predictedX = Phaser.Math.Clamp(remote.target.x + remote.velocity.x * predictionSeconds, 21, WORLD.width - 21);
-      const predictedY = Phaser.Math.Clamp(remote.target.y + remote.velocity.y * predictionSeconds, 21, WORLD.height - 21);
+      const predictedX = Phaser.Math.Clamp(
+        remote.target.x + remote.velocity.x * predictionSeconds,
+        this.movementBounds.minX,
+        this.movementBounds.maxX,
+      );
+      const predictedY = Phaser.Math.Clamp(
+        remote.target.y + remote.velocity.y * predictionSeconds,
+        this.movementBounds.minY,
+        this.movementBounds.maxY,
+      );
       remote.body.x = Phaser.Math.Linear(remote.body.x, predictedX, blend);
       remote.body.y = Phaser.Math.Linear(remote.body.y, predictedY, blend);
       remote.body.setDepth(remote.body.y);
@@ -197,21 +223,11 @@ export class TownSquareScene extends Phaser.Scene {
     layer.add(g);
 
     if (location.kind === "house") {
-      const homeColor = Phaser.Display.Color.HexStringToColor(
-        /^#[0-9a-f]{6}$/i.test(location.color ?? "") ? location.color! : "#ff6b6b",
-      ).color;
-      g.fillStyle(0x89c5e3).fillRect(0, 0, WORLD.width, WORLD.height);
-      g.fillStyle(0x78ad72).fillRect(0, 1040, WORLD.width, 460);
-      g.fillStyle(0xf2e6c9).fillRoundedRect(330, 210, 1540, 1030, 70);
-      g.fillStyle(homeColor).fillRoundedRect(430, 310, 1340, 820, 34);
-      g.fillStyle(0xfff7df).fillRoundedRect(510, 390, 1180, 660, 24);
-      g.fillStyle(0x9ed4e6).fillRoundedRect(645, 455, 310, 230, 14);
-      g.fillStyle(0x9ed4e6).fillRoundedRect(1245, 455, 310, 230, 14);
-      g.fillStyle(0x172033).fillRoundedRect(970, 720, 260, 330, 18);
-      g.fillStyle(0xffd166).fillCircle(1180, 885, 13);
-      g.fillStyle(0xd8c188).fillRoundedRect(620, 795, 410, 155, 22);
-      g.fillStyle(0xd8c188).fillRoundedRect(1170, 795, 410, 155, 22);
-      g.lineStyle(10, 0x172033, 0.18).strokeRoundedRect(510, 390, 1180, 660, 24);
+      this.drawHomeWorld(
+        layer,
+        g,
+        this.activeHomeInterior ?? defaultHomeInterior(location.color),
+      );
     } else if (location.spaceId === "film-district") {
       g.fillStyle(0x24233a).fillRect(0, 0, WORLD.width, WORLD.height);
       g.fillStyle(0x3d354d).fillRoundedRect(280, 180, 1640, 1140, 90);
@@ -269,6 +285,146 @@ export class TownSquareScene extends Phaser.Scene {
     }).setOrigin(.5).setAlpha(.9);
     layer.add(label);
     this.worldLayer = layer;
+  }
+
+  private drawHomeWorld(
+    layer: Phaser.GameObjects.Container,
+    graphics: Phaser.GameObjects.Graphics,
+    layoutValue: HomeInteriorLayout,
+  ): void {
+    const layout = normalizeHomeInterior(layoutValue);
+    const room = { x: 420, y: 300, width: 1360, height: 820 };
+    const wall = phaserColor(layout.wallColor, 0xf3dfbd);
+    const floor = phaserColor(layout.floorColor, 0xd2aa78);
+
+    graphics.fillStyle(layout.lighting === "night" ? 0x1d3150 : 0x89c5e3).fillRect(0, 0, WORLD.width, WORLD.height);
+    graphics.fillStyle(layout.lighting === "night" ? 0x263c42 : 0x78ad72).fillRect(0, 1080, WORLD.width, 420);
+    graphics.fillStyle(0x172033, 0.26).fillRoundedRect(330, 210, 1540, 1030, 70);
+    graphics.fillStyle(0xf7f1e3).fillRoundedRect(348, 228, 1504, 994, 60);
+    graphics.fillStyle(wall).fillRoundedRect(room.x, room.y, room.width, room.height, 34);
+    graphics.fillStyle(floor).fillRect(room.x, 690, room.width, 430);
+    for (let line = 0; line < 9; line += 1) {
+      graphics.lineStyle(3, 0x172033, 0.08)
+        .lineBetween(room.x, 710 + line * 50, room.x + room.width, 710 + line * 50);
+    }
+    graphics.fillStyle(0x9ed4e6).fillRoundedRect(585, 385, 330, 225, 16);
+    graphics.lineStyle(12, 0xf7f1e3).strokeRoundedRect(585, 385, 330, 225, 16);
+    graphics.lineStyle(8, 0x172033, 0.42).strokeRoundedRect(585, 385, 330, 225, 16);
+    graphics.lineStyle(5, 0xffffff, 0.7).lineBetween(750, 397, 750, 598);
+    graphics.fillStyle(0x172033).fillRoundedRect(1515, 405, 175, 310, 16);
+    graphics.fillStyle(0xf2d49b).fillRoundedRect(1535, 432, 135, 270, 10);
+    graphics.fillStyle(0xffd166).fillCircle(1638, 575, 12);
+    graphics.lineStyle(9, 0x172033, 0.25).strokeRoundedRect(room.x, room.y, room.width, room.height, 34);
+
+    const orderedFurniture = [...layout.furniture].sort((left, right) => {
+      if (left.kind === "rug" && right.kind !== "rug") return -1;
+      if (right.kind === "rug" && left.kind !== "rug") return 1;
+      return left.y - right.y;
+    });
+    for (const item of orderedFurniture) {
+      const x = room.x + (item.x / 100) * room.width;
+      const y = room.y + (item.y / 100) * room.height;
+      const furniture = this.add.graphics().setPosition(x, y).setAngle(item.rotation);
+      this.drawHomeFurniture(furniture, item);
+      layer.add(furniture);
+    }
+
+    if (layout.lighting !== "day") {
+      const tint = layout.lighting === "night" ? 0x13213d : 0xffb24f;
+      const alpha = layout.lighting === "night" ? 0.27 : 0.09;
+      layer.add(this.add.rectangle(
+        room.x + room.width / 2,
+        room.y + room.height / 2,
+        room.width,
+        room.height,
+        tint,
+        alpha,
+      ).setOrigin(0.5));
+    }
+  }
+
+  private drawHomeFurniture(graphics: Phaser.GameObjects.Graphics, item: HomeFurniture): void {
+    const color = phaserColor(item.color, 0xff6b6b);
+    const outline = 0x172033;
+    graphics.lineStyle(7, outline, 0.88);
+    if (item.kind === "rug") {
+      graphics.fillStyle(color, 0.82).fillEllipse(0, 0, 280, 105);
+      graphics.strokeEllipse(0, 0, 280, 105);
+      graphics.lineStyle(3, 0xffffff, 0.28).strokeEllipse(0, 0, 225, 70);
+      return;
+    }
+    if (item.kind === "sofa") {
+      graphics.fillStyle(color).fillRoundedRect(-118, -58, 236, 94, 24);
+      graphics.strokeRoundedRect(-118, -58, 236, 94, 24);
+      graphics.fillStyle(color).fillRoundedRect(-132, -25, 38, 82, 15);
+      graphics.fillRoundedRect(94, -25, 38, 82, 15);
+      graphics.strokeRoundedRect(-132, -25, 38, 82, 15);
+      graphics.strokeRoundedRect(94, -25, 38, 82, 15);
+      graphics.lineStyle(5, outline, 0.5).lineBetween(0, -50, 0, 30);
+      return;
+    }
+    if (item.kind === "armchair") {
+      graphics.fillStyle(color).fillRoundedRect(-55, -52, 110, 102, 23);
+      graphics.strokeRoundedRect(-55, -52, 110, 102, 23);
+      graphics.fillStyle(color).fillRoundedRect(-68, -15, 24, 72, 12);
+      graphics.fillRoundedRect(44, -15, 24, 72, 12);
+      return;
+    }
+    if (item.kind === "coffee-table") {
+      graphics.fillStyle(color).fillEllipse(0, -12, 150, 75);
+      graphics.strokeEllipse(0, -12, 150, 75);
+      graphics.lineStyle(9, outline, 0.8).lineBetween(-48, 16, -48, 58);
+      graphics.lineBetween(48, 16, 48, 58);
+      return;
+    }
+    if (item.kind === "tv") {
+      graphics.fillStyle(outline).fillRoundedRect(-95, -63, 190, 126, 13);
+      graphics.fillStyle(color).fillRoundedRect(-81, -50, 162, 96, 7);
+      graphics.lineStyle(10, outline, 0.9).lineBetween(0, 62, 0, 93);
+      graphics.lineStyle(8, outline, 0.9).lineBetween(-42, 94, 42, 94);
+      graphics.lineStyle(4, 0x9ed4e6, 0.65).lineBetween(-55, -27, 32, 17);
+      return;
+    }
+    if (item.kind === "floor-lamp") {
+      graphics.lineStyle(11, outline, 0.82).lineBetween(0, -10, 0, 82);
+      graphics.fillStyle(color).fillTriangle(-48, -12, 48, -12, 30, -82);
+      graphics.lineStyle(7, outline, 0.9).strokeTriangle(-48, -12, 48, -12, 30, -82);
+      graphics.fillStyle(outline).fillEllipse(0, 86, 92, 25);
+      return;
+    }
+    if (item.kind === "plant") {
+      graphics.fillStyle(color).fillCircle(-27, -42, 38);
+      graphics.fillCircle(28, -53, 44);
+      graphics.fillCircle(8, -88, 40);
+      graphics.lineStyle(5, outline, 0.58).strokeCircle(-27, -42, 38);
+      graphics.strokeCircle(28, -53, 44);
+      graphics.strokeCircle(8, -88, 40);
+      graphics.fillStyle(0xb56f48).fillRoundedRect(-43, -18, 86, 92, 10);
+      graphics.lineStyle(7, outline, 0.86).strokeRoundedRect(-43, -18, 86, 92, 10);
+      return;
+    }
+    graphics.fillStyle(color).fillRoundedRect(-83, -87, 166, 174, 8);
+    graphics.lineStyle(7, outline, 0.88).strokeRoundedRect(-83, -87, 166, 174, 8);
+    for (const shelfY of [-40, 8, 55]) {
+      graphics.lineStyle(8, outline, 0.72).lineBetween(-76, shelfY, 76, shelfY);
+    }
+    for (let index = 0; index < 9; index += 1) {
+      const bookX = -66 + (index % 3) * 50;
+      const bookY = -72 + Math.floor(index / 3) * 49;
+      graphics.fillStyle(index % 2 ? 0xffd166 : 0x4cc9f0)
+        .fillRoundedRect(bookX, bookY, 25, 28, 3);
+    }
+  }
+
+  private configureMovementBounds(location: WorldLocation): void {
+    const bounds = location.kind === "house" ? HOME_MOVEMENT_BOUNDS : FULL_WORLD_BOUNDS;
+    this.physics.world.setBounds(bounds.x, bounds.y, bounds.width, bounds.height);
+    this.movementBounds = {
+      minX: bounds.x + 21,
+      maxX: bounds.x + bounds.width - 21,
+      minY: bounds.y + 21,
+      maxY: bounds.y + bounds.height - 21,
+    };
   }
 
   private createLocalNeighbors(): void {
@@ -534,7 +690,7 @@ export class TownSquareScene extends Phaser.Scene {
         }
       },
       currentLocation: () => this.router.current(),
-      onTravel: location => this.travelTo(location),
+      onTravel: (location, interiorLayout) => this.travelTo(location, interiorLayout),
     });
     if (new URLSearchParams(window.location.search).get("wall") === "guest") {
       window.setTimeout(() => this.openSocialPortal(), 0);
@@ -604,7 +760,10 @@ export class TownSquareScene extends Phaser.Scene {
     };
   }
 
-  private async travelTo(location: WorldLocation): Promise<void> {
+  private async travelTo(
+    location: WorldLocation,
+    interiorLayout?: HomeInteriorLayout,
+  ): Promise<void> {
     const current = this.router.current();
     if (current.cityId === location.cityId && current.spaceId === location.spaceId) {
       this.socialPortal?.close();
@@ -625,14 +784,25 @@ export class TownSquareScene extends Phaser.Scene {
     this.remotes.clear();
 
     this.router.goTo(location);
+    this.activeHomeInterior = location.kind === "house"
+      ? normalizeHomeInterior(interiorLayout, location.color)
+      : null;
+    this.configureMovementBounds(location);
     this.drawWorld();
     this.createLocalNeighbors();
-    const spawnAngle = Math.random() * Math.PI * 2;
-    const spawnRadius = Phaser.Math.Between(150, 260);
-    this.player.setPosition(
-      WORLD.width / 2 + Math.cos(spawnAngle) * spawnRadius,
-      WORLD.height / 2 + Math.sin(spawnAngle) * spawnRadius,
-    );
+    if (location.kind === "house") {
+      this.player.setPosition(
+        WORLD.width / 2 + Phaser.Math.Between(-110, 110),
+        HOME_MOVEMENT_BOUNDS.y + HOME_MOVEMENT_BOUNDS.height * 0.62 + Phaser.Math.Between(-45, 45),
+      );
+    } else {
+      const spawnAngle = Math.random() * Math.PI * 2;
+      const spawnRadius = Phaser.Math.Between(150, 260);
+      this.player.setPosition(
+        WORLD.width / 2 + Math.cos(spawnAngle) * spawnRadius,
+        WORLD.height / 2 + Math.sin(spawnAngle) * spawnRadius,
+      );
+    }
     this.moveTarget = null;
     this.localCorrection = null;
     this.updateRoomHud();
@@ -640,7 +810,7 @@ export class TownSquareScene extends Phaser.Scene {
     this.connectionStatus = "connecting";
     this.network = createTownSquareTransport(this.transportCallbacks(), location);
     await this.reconnectMultiplayer(true);
-    this.showUiNotice(`Arrived in ${portalRoom(location.spaceId)?.label ?? "the new room"}.`);
+    this.showUiNotice(`Arrived in ${location.label ?? portalRoom(location.spaceId)?.label ?? "the new room"}.`);
   }
 
   private updateRoomHud(): void {
@@ -1251,19 +1421,9 @@ export class TownSquareScene extends Phaser.Scene {
         this.openSocialPortal();
         return;
       }
-      try {
-        const access = await this.socialPortal?.requestHomeAccess(player.authUserId);
-        if (access === "knocked") {
-          this.showUiNotice("Knock sent. You can enter after your friend lets you in.");
-          this.closePlayerCard();
-          return;
-        }
-        const rect = this.screenRectFor(remote.body);
-        this.closePlayerCard();
-        this.socialPortal?.openHome(player.authUserId, rect, player.color);
-      } catch (error) {
-        this.showUiNotice(error instanceof Error ? error.message : "That Block Home is unavailable.");
-      }
+      const rect = this.screenRectFor(remote.body);
+      this.closePlayerCard();
+      this.socialPortal?.openHome(player.authUserId, rect, player.color);
       return;
     }
     if (action === "mute") {
@@ -1448,6 +1608,12 @@ export class TownSquareScene extends Phaser.Scene {
   }
 
   private escape(value: string): string { return value.replace(/[&<>"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]!); }
+}
+
+function phaserColor(value: string, fallback: number): number {
+  return /^#[0-9a-f]{6}$/i.test(value)
+    ? Phaser.Display.Color.HexStringToColor(value).color
+    : fallback;
 }
 
 function loadStoredIds(key: string): string[] {

@@ -12,6 +12,10 @@ import type {
   SocialPost,
   SocialProfile,
 } from "../social/types";
+import {
+  normalizeHomeInterior,
+  type HomeInteriorLayout,
+} from "../social/homeInterior";
 import { prepareJpeg } from "./image";
 import { createOrLoadProfile } from "./profileBootstrap";
 import { SocialMediaStore } from "./SocialMediaStore";
@@ -61,6 +65,7 @@ interface HomeRow {
   name: string;
   access_mode: BlockHome["accessMode"];
   welcome_note: string;
+  interior_layout: unknown;
 }
 
 interface HomeInvitationRow {
@@ -643,7 +648,7 @@ export class SocialService {
       { data: postData, error: postError },
       { data: relationshipData, error: relationshipError },
     ] = await Promise.all([
-      supabase!.from("homes").select("owner_id,name,access_mode,welcome_note").eq("owner_id", ownerId).maybeSingle(),
+      supabase!.from("homes").select("owner_id,name,access_mode,welcome_note,interior_layout").eq("owner_id", ownerId).maybeSingle(),
       supabase!.from("social_posts").select("*").eq("author_id", ownerId).eq("pinned_to_home", true).eq("media_ready", true).order("created_at", { ascending: false }).limit(12),
       relationshipQuery,
     ]);
@@ -657,6 +662,7 @@ export class SocialService {
       name: row?.name ?? `${profile.displayName}'s Block`,
       accessMode: row?.access_mode ?? "knock",
       welcomeNote: row?.welcome_note ?? "",
+      interiorLayout: normalizeHomeInterior(row?.interior_layout, profile.blockColor),
       profile,
       pinnedPosts: (postData ?? []).map(post => mapPost(post as PostRow, profile)),
       connectedAt: relationshipData && typeof relationshipData.created_at === "string"
@@ -665,7 +671,29 @@ export class SocialService {
     };
   }
 
-  async updateHome(input: { name: string; accessMode: BlockHome["accessMode"]; welcomeNote: string }): Promise<void> {
+  async loadHomeInteriors(userIds: readonly string[]): Promise<Map<string, HomeInteriorLayout>> {
+    await this.requirePermanentAccount();
+    this.requireClient();
+    const ownerIds = [...new Set(userIds.filter(Boolean))];
+    if (!ownerIds.length) return new Map();
+    const { data, error } = await supabase!
+      .from("homes")
+      .select("owner_id,interior_layout")
+      .in("owner_id", ownerIds);
+    if (error) throw error;
+    return new Map((data ?? []).flatMap(row => (
+      typeof row.owner_id === "string"
+        ? [[row.owner_id, normalizeHomeInterior(row.interior_layout)] as const]
+        : []
+    )));
+  }
+
+  async updateHome(input: {
+    name: string;
+    accessMode: BlockHome["accessMode"];
+    welcomeNote: string;
+    interiorLayout: HomeInteriorLayout;
+  }): Promise<void> {
     const account = await this.requirePermanentAccount();
     this.requireClient();
     const payload = {
@@ -674,6 +702,7 @@ export class SocialService {
       name: input.name.trim().slice(0, 40) || "My Block",
       access_mode: input.accessMode,
       welcome_note: input.welcomeNote.trim().slice(0, 180),
+      interior_layout: normalizeHomeInterior(input.interiorLayout),
     };
     const { error } = await supabase!.from("homes").upsert(payload, { onConflict: "owner_id" });
     if (error) throw error;
