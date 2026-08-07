@@ -149,6 +149,49 @@ test("private Block Home tickets require a permanent, social-ready visitor with 
   }
 });
 
+test("anonymous guest sessions receive short-lived Circle TURN credentials", async () => {
+  const env = {
+    ...environment(),
+    CLOUDFLARE_TURN_KEY_ID: "turn-key",
+    CLOUDFLARE_TURN_API_TOKEN: "turn-token",
+  };
+  let requestedTtl = null;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.endsWith("/auth/v1/user")) {
+      return Response.json({ id: USER_ID, is_anonymous: true });
+    }
+    if (url.includes("rtc.live.cloudflare.com")) {
+      requestedTtl = JSON.parse(String(init?.body)).ttl;
+      return Response.json({
+        iceServers: [{
+          urls: ["turn:example.com:3478"],
+          username: "guest-turn-user",
+          credential: "guest-turn-password",
+        }],
+      });
+    }
+    throw new Error(`Unexpected test request: ${url}`);
+  };
+
+  try {
+    const response = await worker.fetch(new Request("https://world.example/ice-servers", {
+      headers: {
+        Authorization: "Bearer guest-session",
+        Origin: ORIGIN,
+      },
+    }), env);
+    assert.equal(response.status, 200);
+    assert.equal(requestedTtl, 900);
+    const result = await response.json();
+    assert.equal(result.relayAvailable, true);
+    assert.equal(result.iceServers[0].urls[0], "turn:example.com:3478");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Portal reports per-room population and only the caller's accepted friends", async () => {
   const requestedRoomNames = [];
   const roomStatus = new Map([

@@ -853,7 +853,7 @@ export class SocialService {
 
   private async requirePermanentAccount(): Promise<SocialAccount> {
     const account = await this.account();
-    if (account.isAnonymous) throw new Error("Create your account to use friends, posts, homes, and Circles.");
+    if (account.isAnonymous) throw new Error("Create your account to use friends, posts, and homes.");
     return account;
   }
 

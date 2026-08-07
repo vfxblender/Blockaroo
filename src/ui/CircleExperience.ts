@@ -174,12 +174,13 @@ export class CircleExperience {
   showConnectionRecap(members: CircleMember[], localPlayerId: string): void {
     const people = members.filter(member => member.playerId !== localPlayerId);
     if (!people.length) return;
+    const localIsGuest = members.find(member => member.playerId === localPlayerId)?.isGuest !== false;
     const toast = document.createElement("article");
     toast.className = "social-toast circle-recap-toast";
     toast.innerHTML = `
       <div class="circle-recap-copy">
         <strong>People from your Circle</strong>
-        <p>Add anyone you actually want to see again.</p>
+        <p>${localIsGuest ? "Guest Circles are temporary. Sign in to save people to your Neighborhood." : "Add anyone with an account you actually want to see again."}</p>
       </div>
       <div class="circle-recap-people"></div>
       <button class="toast-secondary circle-recap-done">Done</button>
@@ -190,8 +191,15 @@ export class CircleExperience {
       row.className = "circle-recap-person";
       row.innerHTML = `
         <i style="--member-color:${escapeAttribute(member.color)}"></i>
-        <span>${escapeHtml(member.username)}</span>
+        <span>${escapeHtml(member.username)}${member.isGuest ? " · Guest" : ""}</span>
       `;
+      if (localIsGuest || member.isGuest) {
+        const note = document.createElement("small");
+        note.textContent = member.isGuest ? "Temporary guest" : "Sign in to add";
+        row.append(note);
+        list.append(row);
+        continue;
+      }
       const button = document.createElement("button");
       button.className = "toast-primary";
       button.textContent = "Add friend";
@@ -265,7 +273,7 @@ export class CircleExperience {
     const memberList = this.circle.members.map(member => `
       <li class="circle-member">
         <span class="circle-member-block" style="--member-color:${escapeAttribute(member.color)}">${member.isMuted ? "×" : ""}</span>
-        <span><strong>${escapeHtml(member.username)}</strong><small>${member.isHost ? "Host" : "Member"}${member.playerId === this.localPlayerId ? " · You" : ""}</small></span>
+        <span><strong>${escapeHtml(member.username)}</strong><small>${member.isHost ? "Host" : "Member"}${member.isGuest ? " · Guest" : ""}${member.playerId === this.localPlayerId ? " · You" : ""}</small></span>
         ${isHost && member.playerId !== this.localPlayerId ? `<button class="quiet-button" data-circle-action="kick" data-player-id="${escapeAttribute(member.playerId)}">Remove</button>` : ""}
       </li>
     `).join("");

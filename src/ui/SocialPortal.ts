@@ -569,7 +569,7 @@ export class SocialPortal {
         <div class="account-copy">
           <span class="eyebrow">SAVE YOUR PEOPLE</span>
           <h1>Turn this guest block into your account.</h1>
-          <p>Your Town Square block already works. An account unlocks friends, 24-hour Block Posts, private homes, Circle voice, and games.</p>
+          <p>Your Town Square block, nearby Circles, voice, and games already work. An account unlocks friends, 24-hour Block Posts, and private homes.</p>
           <form class="account-form" data-social-form="account">
             <label>Email address<input name="email" type="email" autocomplete="email" required placeholder="you@example.com" /></label>
             <label class="terms-check"><input name="terms" type="checkbox" required /> I confirm I meet the minimum age in the Terms and accept the Terms and Community Safety Rules.</label>

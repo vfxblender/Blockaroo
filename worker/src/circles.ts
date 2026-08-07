@@ -21,7 +21,7 @@ export interface CircleParticipant {
   playerId: string;
   username: string;
   color: string;
-  socialReady: boolean;
+  isGuest: boolean;
 }
 
 export interface CircleRoomAdapter {
@@ -228,14 +228,12 @@ export class CircleCoordinator {
   }
 
   private async invite(participant: CircleParticipant, targetPlayerId: string, rawMode: CircleMode): Promise<void> {
-    if (!this.requirePermanent(participant)) return;
     const mode = isCircleMode(rawMode) ? rawMode : "request";
     const target = this.adapter.participant(targetPlayerId);
     if (!target || target.userId === participant.userId) return this.error(participant.userId, "circle_target", "Choose another nearby player.");
     if (this.adapter.blockedBetween(participant.userId, target.userId)) {
       return this.error(participant.userId, "circle_blocked", "That connection is unavailable.");
     }
-    if (!target.socialReady) return this.error(participant.userId, "circle_account", "That player needs to finish account setup before joining a Circle.");
     if (this.circleForUser(target.userId)) return this.error(participant.userId, "circle_busy", "That player is already in a Circle.");
 
     const existingCircle = this.circleForUser(participant.userId);
@@ -283,7 +281,6 @@ export class CircleCoordinator {
   }
 
   private async respondToInvite(participant: CircleParticipant, invitationId: string, accept: boolean): Promise<void> {
-    if (!this.requirePermanent(participant)) return;
     const invitation = this.invitations.get(invitationId);
     if (!invitation || invitation.targetId !== participant.userId || invitation.expiresAt <= Date.now()) {
       return this.error(participant.userId, "circle_invite_missing", "That Circle invitation expired.");
@@ -350,7 +347,6 @@ export class CircleCoordinator {
   }
 
   private async requestJoin(participant: CircleParticipant, circleId: string): Promise<void> {
-    if (!this.requirePermanent(participant)) return;
     if (this.circleForUser(participant.userId)) return this.error(participant.userId, "circle_busy", "Leave your current Circle first.");
     const circle = this.circles.get(circleId);
     if (!circle) return this.error(participant.userId, "circle_missing", "That Circle has closed.");
@@ -384,7 +380,7 @@ export class CircleCoordinator {
       if (requester) this.notice(requesterId, "The Circle host declined your request.");
       return this.persist();
     }
-    if (!requester || !requester.socialReady) return this.error(participant.userId, "circle_requester_left", "That player is no longer available.");
+    if (!requester) return this.error(participant.userId, "circle_requester_left", "That player is no longer available.");
     if (this.circleForUser(requesterId)) return this.error(participant.userId, "circle_requester_busy", "That player joined another Circle.");
     await this.addMember(circle, requesterId);
   }
@@ -573,6 +569,7 @@ export class CircleCoordinator {
           authUserId: participant.userId,
           username: participant.username,
           color: participant.color,
+          isGuest: participant.isGuest,
           isHost: circle.hostId === userId,
           isMuted: Boolean(circle.muted[userId]),
         }] : [];
@@ -616,12 +613,6 @@ export class CircleCoordinator {
     for (const key of this.lastGameActionAt.keys()) {
       if (key.startsWith(`${userId}:`)) this.lastGameActionAt.delete(key);
     }
-  }
-
-  private requirePermanent(participant: CircleParticipant): boolean {
-    if (participant.socialReady) return true;
-    this.error(participant.userId, "circle_account", "Finish account setup before using private voice and games.");
-    return false;
   }
 
   private async cleanup(now: number): Promise<void> {

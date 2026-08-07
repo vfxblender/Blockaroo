@@ -45,12 +45,13 @@ class FakeState {
   }
 }
 
-function fixture() {
+function fixture({ guestUserIds = [] } = {}) {
   const state = new FakeState();
+  const guests = new Set(guestUserIds);
   const participants = new Map([
-    [HOST, { userId: HOST, playerId: HOST, username: "Host", color: "#ff6b6b", socialReady: true }],
-    [GUEST, { userId: GUEST, playerId: GUEST, username: "Guest", color: "#4ecdc4", socialReady: true }],
-    [THIRD, { userId: THIRD, playerId: THIRD, username: "Third", color: "#ffd166", socialReady: true }],
+    [HOST, { userId: HOST, playerId: HOST, username: "Host", color: "#ff6b6b", isGuest: guests.has(HOST) }],
+    [GUEST, { userId: GUEST, playerId: GUEST, username: "Guest", color: "#4ecdc4", isGuest: guests.has(GUEST) }],
+    [THIRD, { userId: THIRD, playerId: THIRD, username: "Third", color: "#ffd166", isGuest: guests.has(THIRD) }],
   ]);
   const positions = new Map([
     [HOST, { x: 100, y: 100 }],
@@ -108,8 +109,8 @@ async function createCircle(context) {
   return latest(context.messages, HOST, "circle-state").circle;
 }
 
-test("Circle membership is proximity-bound and blocked pairs cannot connect", async () => {
-  const context = fixture();
+test("guest Circle membership is proximity-bound and blocked pairs cannot connect", async () => {
+  const context = fixture({ guestUserIds: [HOST, GUEST, THIRD] });
   await context.state.ready;
   context.blocked.add([HOST, GUEST].sort().join(":"));
   await context.coordinator.handle(context.participants.get(HOST), {
@@ -143,6 +144,28 @@ test("host can start and end a private game", async () => {
 
   await context.coordinator.handle(context.participants.get(HOST), { type: "circle-game-end" });
   assert.equal(latest(context.messages, HOST, "circle-state").circle.game, null);
+});
+
+test("two anonymous guests can create a Circle and play a game", async () => {
+  const context = fixture({ guestUserIds: [HOST, GUEST] });
+  const circle = await createCircle(context);
+  assert.deepEqual(circle.members.map(member => member.isGuest), [true, true]);
+
+  await context.coordinator.handle(context.participants.get(HOST), {
+    type: "circle-game-start",
+    game: "cards",
+  });
+  const started = latest(context.messages, HOST, "circle-game-state").snapshot;
+  assert.equal(started.game, "cards");
+  assert.equal(started.revision, 1);
+
+  await context.coordinator.handle(context.participants.get(HOST), {
+    type: "circle-game-action",
+    action: "draw",
+  });
+  const played = latest(context.messages, GUEST, "circle-game-state").snapshot;
+  assert.equal(played.revision, 2);
+  assert.equal(played.publicState.currentPlayerId, GUEST);
 });
 
 test("drawing history is persisted outside the shared Circle record", async () => {
