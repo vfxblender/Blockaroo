@@ -42,6 +42,7 @@ export interface CircleMember {
   authUserId: string;
   username: string;
   color: string;
+  isGuest: boolean;
   isHost: boolean;
   isMuted: boolean;
 }

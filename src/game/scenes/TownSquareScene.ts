@@ -1384,12 +1384,6 @@ export class TownSquareScene extends Phaser.Scene {
         this.showUiNotice("Circles need the Cloudflare world server. Nearby text still works.");
         return;
       }
-      if (this.socialPortal?.accountIsAnonymous()) {
-        this.showUiNotice("Create your account before using private Circle voice and games.");
-        this.closePlayerCard();
-        this.openSocialPortal();
-        return;
-      }
       if (player.circleId) this.network?.requestToJoinCircle(player.circleId);
       else this.network?.inviteToCircle(player.id, "request");
       this.closePlayerCard();

@@ -63,8 +63,9 @@ The WebSocket carries grants and metadata, not image bytes. HMAC tokens bind eac
 ## Social portal and durable media
 
 Supabase RLS owns permanent identity and relationship decisions. Anonymous
-players may move and use nearby talk, but only email-linked accounts can create
-posts, add friends, enter homes, or use Circles.
+players may move, use nearby talk, form temporary Circles, use Circle voice, and
+play games. Only email-linked accounts can create posts, add friends, or enter
+private homes.
 
 Block Posts are chronological and friends-only. Their rows expire after 24
 hours, and their photo/GIF bytes use the same private R2 bucket under a separate
@@ -104,15 +105,17 @@ blocked pairs cannot form or signal inside a Circle even with a crafted client.
 The world socket carries WebRTC offers, answers, and ICE candidates only between
 members of the same Circle. Microphone audio never enters the WebSocket. The
 Worker's authenticated `/ice-servers` endpoint mints short-lived Cloudflare TURN
-credentials; when TURN is not configured, clients retain direct WebRTC plus
-STUN and report that relay is unavailable.
+credentials; guest credentials expire after 15 minutes while permanent-account
+credentials expire after four hours. When TURN is not configured, clients retain
+direct WebRTC plus STUN and report that relay is unavailable.
 
 All four game rules run server-side. Card hands, Draw & Guess words, and
 Bluff/Impostor roles are sent as per-member private snapshots. Outsiders receive
 only Circle count, access mode, and a broad activity label. Membership is
 automatically locked while a game is active so a mid-round join cannot destroy
-private state. When a Circle closes, its former members receive a lightweight
-friend-request recap rather than a persistent group channel.
+private state. When a Circle closes, permanent members receive a lightweight
+friend-request recap; guest members are labeled temporary and cannot be added as
+persistent friends.
 
 ## Expansion model
 

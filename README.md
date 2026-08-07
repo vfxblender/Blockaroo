@@ -19,8 +19,8 @@ The repository is ready to grow into multiple cities, private homes and overworl
 - friend-request cancellation, unfriend/unblock controls, sign-out, and full account deletion
 - chronological friends-only Block Posts that expire after 24 hours, load in 20-post pages, and lazy-load media
 - authenticated R2 photo/GIF posts, persistent pinned Block Home memories, and a broad-location Nashville social map
-- private six-person Circles joined through nearby player avatars, with an enforced movement grace radius
-- WebRTC mesh voice with short-lived Cloudflare TURN credentials
+- guest-ready private six-person Circles joined through nearby player avatars, with an enforced movement grace radius
+- WebRTC mesh voice with short-lived Cloudflare TURN credentials, including 15-minute guest relay access
 - four server-authoritative Circle games: Crazy Blocks, Draw & Guess, Bluff / Impostor, and Square-Off
 - post-Circle connection recaps for sending friend requests without creating permanent group channels
 - stateful WebSocket world transport with a working Supabase Realtime fallback

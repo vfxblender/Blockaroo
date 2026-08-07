@@ -902,7 +902,7 @@ export class TownSquareRoom implements DurableObject {
       playerId: attachment.playerId,
       username: attachment.username,
       color: attachment.color,
-      socialReady: attachment.socialReady === true,
+      isGuest: attachment.isAnonymous !== false,
     };
   }
 
@@ -1131,10 +1131,6 @@ async function deleteSocialMedia(
 async function createIceServers(request: Request, env: Env, origin: string | null): Promise<Response> {
   const authenticated = await authenticateRequest(request, env);
   if (authenticated instanceof Response) return withCors(authenticated, origin, env);
-  if (authenticated.isAnonymous
-    || !await checkSocialReadyProfile(env, authenticated.accessToken, authenticated.userId)) {
-    return json({ error: "Finish account setup before using Circle voice." }, 403, origin, env);
-  }
   const stunOnly = {
     iceServers: [{ urls: ["stun:stun.cloudflare.com:3478"] }],
     relayAvailable: false,
@@ -1151,7 +1147,7 @@ async function createIceServers(request: Request, env: Env, origin: string | nul
         Authorization: `Bearer ${env.CLOUDFLARE_TURN_API_TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ ttl: 14_400 }),
+      body: JSON.stringify({ ttl: authenticated.isAnonymous ? 900 : 14_400 }),
     },
   );
   if (!response.ok) {
